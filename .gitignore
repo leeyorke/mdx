@@ -3,6 +3,7 @@ oxford.db
 oxford.mdx
 oaldpe.db
 oaldpe.mdx
+user.db
 
 # Project specific ignores
 MdxScraper/output/*
