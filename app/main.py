@@ -24,13 +24,14 @@ app = FastAPI(
 
 # ── Request schemas ─────────────────────────────────────────────────
 
+
 class AddVocabularyWordPayload(BaseModel):
     word: str
     translation: str
-    contextUrl: Optional[str] = None
-    contextText: Optional[str] = None
-    sourceLanguage: Optional[str] = None
-    targetLanguage: Optional[str] = None
+    context_url: Optional[str] = None
+    context_text: Optional[str] = None
+    source_language: Optional[str] = None
+    target_language: Optional[str] = None
     note: Optional[str] = None
 
 
@@ -47,6 +48,7 @@ class ReviewResponse(BaseModel):
 
 
 # ── Root / Dictionary ───────────────────────────────────────────────
+
 
 @app.get("/")
 async def root():
@@ -87,16 +89,17 @@ async def search(
 
 # ── Vocabulary ──────────────────────────────────────────────────────
 
+
 @app.post("/api/vocabulary")
 async def create_vocabulary(payload: AddVocabularyWordPayload):
     """添加生词到生词本"""
     record = add_word(
         word=payload.word,
         translation=payload.translation,
-        context_url=payload.contextUrl,
-        context_text=payload.contextText,
-        source_language=payload.sourceLanguage,
-        target_language=payload.targetLanguage,
+        context_url=payload.context_url,
+        context_text=payload.context_text,
+        source_language=payload.source_language,
+        target_language=payload.target_language,
         note=payload.note,
     )
     return record
