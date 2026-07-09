@@ -4,6 +4,7 @@ oxford.mdx
 oaldpe.db
 oaldpe.mdx
 user.db
+ngsl.db
 
 # Project specific ignores
 MdxScraper/output/*

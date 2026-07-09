@@ -125,10 +125,31 @@ def query_word(word: str) -> dict | None:
     cursor = conn.cursor()
     cursor.execute("SELECT entry, paraphrase FROM mdx WHERE entry = ?", (word,))
     result = cursor.fetchone()
+
+    if not result:
+        conn.close()
+        return None
+
+    paraphrase = result[1]
+
+    # 处理重定向
+    if paraphrase.startswith("@@@LINK="):
+        target = paraphrase[len("@@@LINK=") :].strip()
+
+        cursor.execute("SELECT entry, paraphrase FROM mdx WHERE entry=?", (target,))
+        result = cursor.fetchone()
+
+        if not result:
+            conn.close()
+            return None
+
+        paraphrase = result[1]
+
     conn.close()
 
-    if result and result[1] and "<" in result[1]:
-        return parse_dictionary_entry(result[1])
+    if paraphrase and "<" in paraphrase:
+        return parse_dictionary_entry(paraphrase)
+
     return None
 
 
