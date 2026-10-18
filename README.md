@@ -5,8 +5,21 @@
 ```bash
 cd D:\myworkspace\mdx
 # 一条命令同时启动 API 和 GoldenDict 监听（监听随主应用启停）
-uv run python -X utf8 -m uvicorn app.main:app --host 127.0.0.1 --port 4080
+# --host 0.0.0.0 允许局域网访问；只本机使用可改成 127.0.0.1
+uv run python -X utf8 -m uvicorn app.main:app --host 0.0.0.0 --port 4080
 ```
+
+## 开机自启
+
+已配置为**用户登录时自动启动**（隐藏后台运行，无需每次手动开）：
+
+- 启动链：「启动」文件夹的 `MDX-GoldenDict-API.lnk` → `script/autostart.vbs` →
+  `script/run_server.bat`（用 `.venv` 的 python 直接起 uvicorn，日志写 `data/server.log`）
+- 安装/重建：`pwsh script/install_autostart.ps1`
+- 停止服务：`pwsh script/stop_server.ps1`（只结束监听 4080 的进程）
+- 卸载：删除「启动」文件夹（`shell:startup`）里的 `MDX-GoldenDict-API.lnk`
+- 说明：自启用 `.venv` python 而非 `uv run`，避免开机时联网同步依赖导致启动失败；
+  改了依赖后在开发机 `uv sync` 即可。计划任务方案需要管理员权限，故用启动文件夹。
 
 ## GoldenDict 查词自动入生词本
 

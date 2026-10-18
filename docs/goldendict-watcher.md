@@ -18,6 +18,22 @@
 - 与独立进程共用同一把文件锁：已有独立监听在跑时，嵌入实例打 warning 后让位，不双写；
   `uvicorn --workers N` 时同理，只有一个实例真正写入。
 
+## 开机自启（本机已配置）
+
+用户登录时自动启动，隐藏后台运行：
+
+| 文件 | 作用 |
+|------|------|
+| `script/install_autostart.ps1` | 在「启动」文件夹创建快捷方式 `MDX-GoldenDict-API.lnk`（本机已执行） |
+| `script/autostart.vbs` | 隐藏窗口启动器（快捷方式目标；**必须保持纯 ASCII**——WSH 按系统 ANSI 代码页读 .vbs，中文注释会编译失败） |
+| `script/run_server.bat` | cd 到项目根，用 `.venv\Scripts\python.exe` 起 uvicorn（4080），日志追加到 `data\server.log` |
+| `script/stop_server.ps1` | 按 4080 端口结束服务进程 |
+
+- 自启用 `.venv` python 而非 `uv run`：避免开机时联网同步依赖导致启动失败；更新依赖后开发机手动 `uv sync`
+- 未用计划任务：注册需要管理员权限（当前用户 `Access is denied`）
+- 登出/重启后自动重新启动；端口 4080 被占用时新实例绑定失败即退出（日志可见），
+  叠加文件锁，不会出现双写
+
 ## 监听的文件与格式
 
 | 文件 | 格式 | 示例 | 解析方式 |
