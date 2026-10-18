@@ -13,13 +13,18 @@ uv run python -X utf8 -m uvicorn app.main:app --host 0.0.0.0 --port 4080
 
 已配置为**用户登录时自动启动**（隐藏后台运行，无需每次手动开）：
 
-- 启动链：「启动」文件夹的 `MDX-GoldenDict-API.lnk` → `script/autostart.vbs` →
-  `script/run_server.bat`（用 `.venv` 的 python 直接起 uvicorn，日志写 `data/server.log`）
-- 安装/重建：`pwsh script/install_autostart.ps1`
+- 主方式（本机已安装）：计划任务 `MDX-GoldenDict-API`，由 `script/install_scheduled_task.cmd`
+  安装——**双击即可**，脚本检测到非管理员会自动提权重跑；任务定义在 `script/mdx-task.xml`
+  （登录时运行 wscript → `script/autostart.vbs` → `script/run_server.bat`，隐藏窗口、
+  不限运行时长、电池模式照常启动）
+- 卸载：管理员终端 `schtasks /Delete /TN "MDX-GoldenDict-API" /F`，或 taskschd.msc 里删除
+- 备用方式（没有管理员权限时）：启动文件夹方案，`pwsh script/install_autostart.ps1`
 - 停止服务：`pwsh script/stop_server.ps1`（只结束监听 4080 的进程）
-- 卸载：删除「启动」文件夹（`shell:startup`）里的 `MDX-GoldenDict-API.lnk`
+- 日志：`data/server.log`
 - 说明：自启用 `.venv` python 而非 `uv run`，避免开机时联网同步依赖导致启动失败；
-  改了依赖后在开发机 `uv sync` 即可。计划任务方案需要管理员权限，故用启动文件夹。
+  改了依赖后在开发机 `uv sync` 即可
+- 注意：`*.bat` / `*.cmd` 保持**纯 ASCII + CRLF**——cmd 按 OEM 代码页逐字节解析，
+  非 ASCII 字节混进 echo 行会把命令名吃掉
 
 ## GoldenDict 查词自动入生词本
 

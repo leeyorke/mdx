@@ -24,13 +24,19 @@
 
 | 文件 | 作用 |
 |------|------|
-| `script/install_autostart.ps1` | 在「启动」文件夹创建快捷方式 `MDX-GoldenDict-API.lnk`（本机已执行） |
-| `script/autostart.vbs` | 隐藏窗口启动器（快捷方式目标；**必须保持纯 ASCII**——WSH 按系统 ANSI 代码页读 .vbs，中文注释会编译失败） |
+| `script/install_scheduled_task.cmd` | **主安装脚本**：创建计划任务 `MDX-GoldenDict-API`（双击运行；非管理员时自动提权重跑） |
+| `script/mdx-task.xml` | 任务定义：登录触发，`wscript → autostart.vbs`，不限时长、电池模式照常 |
+| `script/autostart.vbs` | 隐藏窗口启动器 |
 | `script/run_server.bat` | cd 到项目根，用 `.venv\Scripts\python.exe` 起 uvicorn（4080），日志追加到 `data\server.log` |
+| `script/install_autostart.ps1` | 备用：无管理员权限时改用「启动文件夹」快捷方式 |
 | `script/stop_server.ps1` | 按 4080 端口结束服务进程 |
 
+- 注册计划任务需要**提权**（非提权进程会被拒 Access is denied，本机任务库经过加固），
+  安装脚本会自动 RunAs 重跑；已实测 任务 → wscript → vbs → 隐藏服务 全链路通过
+- `.bat` / `.cmd` 必须保持**纯 ASCII + CRLF**：cmd 按 OEM 代码页逐字节解析，
+  非 ASCII 字节混进 echo 行会吃掉命令名字符、LF 行尾会破坏括号块解析
+- `autostart.vbs` 同理保持纯 ASCII：WSH 按系统 ANSI 代码页读 .vbs，中文注释会编译失败
 - 自启用 `.venv` python 而非 `uv run`：避免开机时联网同步依赖导致启动失败；更新依赖后开发机手动 `uv sync`
-- 未用计划任务：注册需要管理员权限（当前用户 `Access is denied`）
 - 登出/重启后自动重新启动；端口 4080 被占用时新实例绑定失败即退出（日志可见），
   叠加文件锁，不会出现双写
 
