@@ -13,8 +13,9 @@ uv run python -X utf8 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 三个文件，出现新词时自动通过 API 写入生词本：
 
 - **首次运行**会把三个文件中已存在的单词全部导入；
-- 之后每次轮询只处理新增的单词，**生词本不会重复**（以 `user.db` 已有单词 +
+- 之后默认每 1 小时轮询一次，只处理新增的单词，**生词本不会重复**（以 `user.db` 已有单词 +
   本地 `data/goldendict_state.json` 已处理记录为准，大小写不敏感）；
+- 00:00–08:00 为免打扰时段，暂停轮询（`MDX_WATCH_QUIET_HOURS` 可调整，置空关闭）；
 - 自动过滤短语 / URL / 路径 / 中文句子等非单词条目；
 - 写入时自动从词典库查询释义，按生词本既有多行格式生成 translation。
 
@@ -22,7 +23,7 @@ uv run python -X utf8 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 # 终端 1：启动 API 服务（监听依赖它）
 uv run python -X utf8 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
-# 终端 2：首次导入 + 持续监听（默认每 2 秒轮询一次）
+# 终端 2：首次导入 + 持续监听（默认每 1 小时轮询，00:00-08:00 免打扰）
 uv run python -X utf8 -m app.goldendict
 
 # 只同步一次（首次导入）

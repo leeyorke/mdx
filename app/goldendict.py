@@ -18,13 +18,16 @@
    自动跳过）。
 4. **翻译**：写入时自动从词典库（oaldpe.db）查询释义，按生词本既有的
    多行格式生成 ``translation``；词典未收录时写入占位符。
+5. **轮询节奏**：默认每小时轮询一次；00:00–08:00 为免打扰时段，暂停轮询，
+   08:00 自动恢复（环境变量 ``MDX_WATCH_QUIET_HOURS`` 可调整，置空关闭）。
 
 用法::
 
     # 首次导入 + 持续监听（需先启动 API 服务）
+    # 默认每小时轮询一次，00:00-08:00 免打扰暂停
     python -m app.goldendict
 
-    # 只同步一次（首次导入）
+    # 只同步一次（首次导入；手动同步不受免打扰时段限制）
     python -m app.goldendict --once
 
     # 预览将要导入的单词，不实际写入
@@ -42,7 +45,7 @@ import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -65,8 +68,30 @@ DEFAULT_API_BASE = os.environ.get("MDX_API_BASE_URL", "http://127.0.0.1:8000").r
 )
 DEFAULT_STATE_FILE = PROJECT_ROOT / "data" / "goldendict_state.json"
 DEFAULT_LOCK_FILE = PROJECT_ROOT / "data" / "goldendict_watcher.lock"
-DEFAULT_POLL_INTERVAL = float(os.environ.get("MDX_WATCH_INTERVAL", "2"))
+DEFAULT_POLL_INTERVAL = float(os.environ.get("MDX_WATCH_INTERVAL", "3600"))
 HTTP_TIMEOUT = float(os.environ.get("MDX_WATCH_HTTP_TIMEOUT", "10"))
+
+# 免打扰时段（按本机时间的小时数），格式 "起始-结束"，如 "0-8"；置空关闭
+QUIET_HOURS_SPEC = os.environ.get("MDX_WATCH_QUIET_HOURS", "0-8")
+
+
+def _parse_quiet_hours(spec: str) -> Optional[tuple[int, int]]:
+    """解析免打扰时段，返回 (起始小时, 结束小时)；空值或非法返回 None（不启用）"""
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    m = re.fullmatch(r"(\d{1,2})\s*-\s*(\d{1,2})", spec)
+    if not m:
+        log.warning("免打扰时段配置无效，已忽略: %r", spec)
+        return None
+    start, end = int(m.group(1)), int(m.group(2))
+    if not (0 <= start <= 23 and 0 <= end <= 23) or start == end:
+        log.warning("免打扰时段配置无效，已忽略: %r", spec)
+        return None
+    return start, end
+
+
+QUIET_HOURS: Optional[tuple[int, int]] = _parse_quiet_hours(QUIET_HOURS_SPEC)
 
 MAX_SENSES = 8  # translation 中最多保留的义项数量
 NO_TRANSLATION = "（暂无释义）"
@@ -288,6 +313,41 @@ class SyncReport:
         return prefix + "；".join(parts)
 
 
+# ── 免打扰时段 ────────────────────────────────────────────────────────
+
+
+def in_quiet_hours(now: Optional[datetime] = None) -> bool:
+    """当前是否处于免打扰时段（按本机时间）"""
+    if QUIET_HOURS is None:
+        return False
+    start, end = QUIET_HOURS
+    hour = (now or datetime.now().astimezone()).hour
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end  # 跨午夜，如 22-6
+
+
+def seconds_until_quiet_end(now: Optional[datetime] = None) -> float:
+    """距离免打扰时段结束还有多少秒（未配置免打扰时返回 0）"""
+    if QUIET_HOURS is None:
+        return 0.0
+    now = now or datetime.now().astimezone()
+    end = now.replace(hour=QUIET_HOURS[1], minute=0, second=0, microsecond=0)
+    if end <= now:
+        end += timedelta(days=1)
+    return (end - now).total_seconds()
+
+
+def _sleep_in_chunks(seconds: float, chunk: float = 60.0) -> None:
+    """分片休眠（默认每片 60 秒），保证 Ctrl+C 能及时中断长睡眠"""
+    deadline = time.monotonic() + max(0.0, seconds)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(chunk, remaining))
+
+
 # ── 监听器 ────────────────────────────────────────────────────────────
 
 
@@ -460,14 +520,25 @@ class GoldenDictWatcher:
         return report
 
     def run_forever(self, interval: float = DEFAULT_POLL_INTERVAL) -> None:
+        quiet_desc = (
+            f"{QUIET_HOURS[0]:02d}:00-{QUIET_HOURS[1]:02d}:00 免打扰"
+            if QUIET_HOURS
+            else "无免打扰时段"
+        )
         log.info(
-            "开始监听 %s（每 %.1f 秒一次，API: %s，state: %s）",
+            "开始监听 %s（每 %.0f 秒一次，%s，API: %s，state: %s）",
             self.goldendict_dir,
             interval,
+            quiet_desc,
             self.api_base,
             self.state_file,
         )
         while True:
+            if in_quiet_hours():
+                wait = seconds_until_quiet_end()
+                log.info("免打扰时段内，暂停轮询，约 %.0f 分钟后恢复", wait / 60)
+                _sleep_in_chunks(wait)
+                continue
             try:
                 report = self.sync_once()
                 if report.added or report.errors:
@@ -475,7 +546,7 @@ class GoldenDictWatcher:
                 else:
                     log.debug("同步完成: %s", report.summary())
             except Exception:
-                log.exception("同步过程发生异常，%.1f 秒后重试", interval)
+                log.exception("同步过程发生异常，%.0f 秒后重试", interval)
             time.sleep(interval)
 
 
@@ -543,7 +614,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--interval",
         type=float,
         default=DEFAULT_POLL_INTERVAL,
-        help="轮询间隔秒数（默认 %(default)s）",
+        help=f"轮询间隔秒数（默认 {DEFAULT_POLL_INTERVAL:g}，即 1 小时）",
     )
     parser.add_argument(
         "--once", action="store_true", help="只同步一次后退出（首次导入用）"
@@ -579,6 +650,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
     try:
         if args.once:
+            if in_quiet_hours():
+                log.info("当前处于免打扰时段，但 --once 是手动同步，仍执行一次")
             report = watcher.sync_once()
             log.info("同步完成: %s", report.summary())
             if report.added and not args.dry_run:

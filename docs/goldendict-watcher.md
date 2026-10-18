@@ -23,8 +23,9 @@
 
 1. **首次全量导入**：没有 `data/goldendict_state.json` 时，先把三个文件中已存在的
    单词全部导入生词本（已实际执行：344 个新词，10 个生词本已有单词跳过）。
-2. **增量监听**：之后每 2 秒（`--interval` 可调）重新解析三个文件，只处理新出现的单词。
-   GoldenDict 重写 / 轮转文件不影响正确性（每次全量解析 + 差集）。
+2. **增量监听**：之后每 1 小时（`--interval` / `MDX_WATCH_INTERVAL` 可调）重新解析
+   三个文件，只处理新出现的单词。GoldenDict 重写 / 轮转文件不影响正确性
+   （每次全量解析 + 差集）。
 3. **不重复**：单词进入生词本前经过两道过滤——
    - 生词本（`user.db`）中已存在（大小写不敏感）；
    - 本地 state 的 `processed` 集合中已处理过。
@@ -34,6 +35,8 @@
    单词逐个写入，中途失败不影响已成功的部分。
 5. **单实例**：通过 `data/goldendict_watcher.lock` 文件锁保证同时只有一个监听进程，
    防止并发重复写入。
+6. **免打扰时段**：默认 00:00–08:00（按本机时间）暂停轮询，08:00 自动恢复；
+   期间日志会提示预计恢复时间。`--once` 是手动同步，不受免打扰限制。
 
 ## 写入内容
 
@@ -60,7 +63,8 @@
 |------|--------|------|
 | `GOLDENDICT_DIR` | `C:\Users\leeyorke\AppData\Roaming\GoldenDict` | GoldenDict 配置目录 |
 | `MDX_API_BASE_URL` | `http://127.0.0.1:8000` | 生词本 API 地址 |
-| `MDX_WATCH_INTERVAL` | `2` | 轮询间隔（秒） |
+| `MDX_WATCH_INTERVAL` | `3600` | 轮询间隔（秒，默认 1 小时） |
+| `MDX_WATCH_QUIET_HOURS` | `0-8` | 免打扰时段（小时，`起始-结束`，支持跨午夜如 `22-6`；置空关闭） |
 | `MDX_WATCH_HTTP_TIMEOUT` | `10` | API 请求超时（秒） |
 
 state 文件（`data/goldendict_state.json`）记录 `initialized`、`processed`（已处理
@@ -73,6 +77,6 @@ state 文件（`data/goldendict_state.json`）记录 `initialized`、`processed`
 uv run python -X utf8 script/test_goldendict.py
 ```
 
-46 项检查：三种格式解析、干净单词提取、翻译格式化、state 读写、单实例锁，
-以及基于真实 uvicorn 服务的端到端场景（首次导入 / 再次运行不重复 / 新词增量 /
-state 丢失不重复 / API 故障恢复补写）。
+66 项检查：三种格式解析、干净单词提取、翻译格式化、state 读写、单实例锁、免打扰时段
+（含跨午夜配置与持续监听暂停逻辑），以及基于真实 uvicorn 服务的端到端场景
+（首次导入 / 再次运行不重复 / 新词增量 / state 丢失不重复 / API 故障恢复补写）。

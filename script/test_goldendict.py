@@ -348,6 +348,89 @@ def test_real_dictionary_translation() -> None:
           watcher._lookup_translation("zzqqxxnotaword") == "（暂无释义）")
 
 
+def test_quiet_hours() -> None:
+    print("[7] 免打扰时段")
+    from datetime import datetime
+    from unittest import mock
+
+    import app.goldendict as gd
+
+    check("解析 0-8", gd._parse_quiet_hours("0-8") == (0, 8))
+    check("解析 22-6（跨午夜）", gd._parse_quiet_hours("22-6") == (22, 6))
+    check("空值关闭免打扰", gd._parse_quiet_hours("") is None)
+    check("非法值被忽略", gd._parse_quiet_hours("bad") is None)
+    check("越界值被忽略", gd._parse_quiet_hours("25-8") is None)
+    check("起止相同被忽略", gd._parse_quiet_hours("8-8") is None)
+
+    with mock.patch.object(gd, "QUIET_HOURS", (0, 8)):
+        check("00:30 免打扰", gd.in_quiet_hours(datetime(2026, 1, 1, 0, 30)))
+        check("07:59 免打扰", gd.in_quiet_hours(datetime(2026, 1, 1, 7, 59)))
+        check("08:00 解除免打扰", not gd.in_quiet_hours(datetime(2026, 1, 1, 8, 0)))
+        check("23:00 不免打扰", not gd.in_quiet_hours(datetime(2026, 1, 1, 23, 0)))
+        check("00:30 距离结束约 7.5 小时",
+              abs(gd.seconds_until_quiet_end(datetime(2026, 1, 1, 0, 30)) - 7.5 * 3600) < 1)
+        check("09:00 距离次日结束约 23 小时",
+              abs(gd.seconds_until_quiet_end(datetime(2026, 1, 1, 9, 0)) - 23 * 3600) < 1)
+    with mock.patch.object(gd, "QUIET_HOURS", (22, 6)):
+        check("跨午夜 23:00 免打扰", gd.in_quiet_hours(datetime(2026, 1, 1, 23, 0)))
+        check("跨午夜 03:00 免打扰", gd.in_quiet_hours(datetime(2026, 1, 1, 3, 0)))
+        check("跨午夜 12:00 不免打扰", not gd.in_quiet_hours(datetime(2026, 1, 1, 12, 0)))
+    with mock.patch.object(gd, "QUIET_HOURS", None):
+        check("未配置时永不免打扰", not gd.in_quiet_hours(datetime(2026, 1, 1, 3, 0)))
+        check("未配置时等待时长为 0",
+              gd.seconds_until_quiet_end(datetime(2026, 1, 1, 3, 0)) == 0.0)
+
+
+def test_run_forever_quiet_hours() -> None:
+    print("[8] 持续监听：免打扰时段暂停轮询")
+    from unittest import mock
+
+    import app.goldendict as gd
+
+    with tempfile.TemporaryDirectory() as td:
+        watcher = GoldenDictWatcher(
+            goldendict_dir=Path(td) / "gd",
+            api_base="http://127.0.0.1:1",
+            state_file=Path(td) / "state.json",
+            vocab_db=Path(td) / "user.db",
+        )
+
+        sleeps: list[float] = []
+        quiet_waits: list[float] = []
+        sync_calls = {"n": 0}
+
+        class _StopLoop(Exception):
+            pass
+
+        def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            if len(sleeps) >= 2:
+                raise _StopLoop
+
+        def fake_chunks(seconds: float, chunk: float = 60.0) -> None:
+            quiet_waits.append(seconds)
+
+        def fake_sync() -> gd.SyncReport:
+            sync_calls["n"] += 1
+            return gd.SyncReport()
+
+        quiet_states = iter([True, False, False])
+
+        with mock.patch.object(gd.time, "sleep", fake_sleep), \
+             mock.patch.object(gd, "_sleep_in_chunks", fake_chunks), \
+             mock.patch.object(watcher, "sync_once", fake_sync), \
+             mock.patch.object(gd, "in_quiet_hours", lambda: next(quiet_states)), \
+             mock.patch.object(gd, "seconds_until_quiet_end", lambda: 1234.0):
+            try:
+                watcher.run_forever(interval=3600)
+            except _StopLoop:
+                pass
+
+        check("免打扰时段先休眠到结束", quiet_waits == [1234.0], f"got {quiet_waits}")
+        check("免打扰期间不执行同步", sync_calls["n"] == 2, f"got {sync_calls}")
+        check("正常时段按 interval 休眠", sleeps == [3600, 3600], f"got {sleeps}")
+
+
 def main() -> int:
     test_parsers()
     test_format_translation()
@@ -355,6 +438,8 @@ def main() -> int:
     test_singleton_lock()
     test_end_to_end()
     test_real_dictionary_translation()
+    test_quiet_hours()
+    test_run_forever_quiet_hours()
 
     print()
     print(f"通过 {PASS} 项，失败 {FAIL} 项")
