@@ -36,9 +36,12 @@ CREATE INDEX IF NOT EXISTS idx_vw_count     ON vocabulary_words(review_count);
 
 def _init_db() -> None:
     """首次使用时自动建表"""
-    with sqlite3.connect(DB_FILE) as conn:
+    conn = sqlite3.connect(DB_FILE)
+    try:
         conn.executescript(_CREATE_SQL)
         conn.commit()
+    finally:
+        conn.close()
 
 
 def _ensure_db() -> None:
