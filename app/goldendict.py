@@ -69,7 +69,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GOLDENDICT_DIR = Path(
     os.environ.get("GOLDENDICT_DIR", r"C:\Users\leeyorke\AppData\Roaming\GoldenDict")
 )
-DEFAULT_API_BASE = os.environ.get("MDX_API_BASE_URL", "http://127.0.0.1:8000").rstrip(
+DEFAULT_API_BASE = os.environ.get("MDX_API_BASE_URL", "http://127.0.0.1:4080").rstrip(
     "/"
 )
 DEFAULT_STATE_FILE = Path(

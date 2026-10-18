@@ -5,7 +5,7 @@
 ```bash
 cd D:\myworkspace\mdx
 # 一条命令同时启动 API 和 GoldenDict 监听（监听随主应用启停）
-uv run python -X utf8 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+uv run python -X utf8 -m uvicorn app.main:app --host 127.0.0.1 --port 4080
 ```
 
 ## GoldenDict 查词自动入生词本

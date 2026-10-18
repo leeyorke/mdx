@@ -152,7 +152,7 @@ def stop_test_server(server: uvicorn.Server) -> None:
         time.sleep(0.05)
 
 
-def make_watcher(tmp: Path, *, api_base: str = "http://127.0.0.1:8000") -> GoldenDictWatcher:
+def make_watcher(tmp: Path, *, api_base: str = "http://127.0.0.1:4080") -> GoldenDictWatcher:
     return GoldenDictWatcher(
         goldendict_dir=tmp / "goldendict",
         api_base=api_base,

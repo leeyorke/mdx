@@ -76,7 +76,7 @@
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `GOLDENDICT_DIR` | `C:\Users\leeyorke\AppData\Roaming\GoldenDict` | GoldenDict 配置目录 |
-| `MDX_API_BASE_URL` | `http://127.0.0.1:8000` | 生词本 API 地址（仅独立进程模式使用） |
+| `MDX_API_BASE_URL` | `http://127.0.0.1:4080` | 生词本 API 地址（仅独立进程模式使用） |
 | `MDX_WATCH_INTERVAL` | `3600` | 轮询间隔（秒，默认 1 小时） |
 | `MDX_WATCH_QUIET_HOURS` | `0-8` | 免打扰时段（小时，`起始-结束`，支持跨午夜如 `22-6`；置空关闭） |
 | `MDX_WATCH_AUTOSTART` | `1` | 是否随主 app 自动启动监听（`0` 关闭） |

@@ -43,7 +43,7 @@ app = FastAPI(
     version="1.0.0",
     contact={"name": "API Support", "email": "support@example.com"},
     license={"name": "MIT"},
-    servers=[{"url": "http://127.0.0.1:8000", "description": "本地开发服务"}],
+    servers=[{"url": "http://127.0.0.1:4080", "description": "本地开发服务"}],
     external_docs={
         "description": "项目 README",
         "url": "/README.md",
