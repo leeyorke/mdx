@@ -4,33 +4,32 @@
 
 ```bash
 cd D:\myworkspace\mdx
+# 一条命令同时启动 API 和 GoldenDict 监听（监听随主应用启停）
 uv run python -X utf8 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 ## GoldenDict 查词自动入生词本
 
-监听 GoldenDict 的 `favorites`（收藏）、`history`（查词痕迹）、`history.tmp`（待写入查词记录）
-三个文件，出现新词时自动通过 API 写入生词本：
+监听**随主应用自动启动/停止**：启动 uvicorn 即开始监听，主应用退出（Ctrl+C / kill）监听立即结束，无需第二个命令。监听 GoldenDict 的 `favorites`（收藏）、`history`（查词痕迹）、`history.tmp`（待写入查词记录）三个文件，出现新词时自动写入生词本：
 
 - **首次运行**会把三个文件中已存在的单词全部导入；
 - 之后默认每 1 小时轮询一次，只处理新增的单词，**生词本不会重复**（以 `user.db` 已有单词 +
   本地 `data/goldendict_state.json` 已处理记录为准，大小写不敏感）；
 - 00:00–08:00 为免打扰时段，暂停轮询（`MDX_WATCH_QUIET_HOURS` 可调整，置空关闭）；
-- 自动过滤短语 / URL / 路径 / 中文句子等非单词条目；
-- 写入时自动从词典库查询释义，按生词本既有多行格式生成 translation。
+- 嵌入模式写入走进程内数据层（`POST /api/vocabulary` 端点内部使用的同一个 `add_word`），
+  与 API 行为一致，且不受端口影响。
+
+不需要自动监听：设 `MDX_WATCH_AUTOSTART=0`。也可独立运行监听（首次导入 / 调试用）：
 
 ```bash
-# 终端 1：启动 API 服务（监听依赖它）
-uv run python -X utf8 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-
-# 终端 2：首次导入 + 持续监听（默认每 1 小时轮询，00:00-08:00 免打扰）
-uv run python -X utf8 -m app.goldendict
-
-# 只同步一次（首次导入）
+# 只同步一次（首次导入；手动同步不受免打扰限制）
 uv run python -X utf8 -m app.goldendict --once
 
 # 预览将要导入的单词，不实际写入
 uv run python -X utf8 -m app.goldendict --once --dry-run
+
+# 独立进程持续监听（通过 HTTP API 写入）
+uv run python -X utf8 -m app.goldendict
 ```
 
 详见 [docs/goldendict-watcher.md](docs/goldendict-watcher.md)。

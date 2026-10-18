@@ -1,11 +1,14 @@
 """FastAPI 字典查询接口"""
 
+import logging
+from contextlib import asynccontextmanager
 from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, Query, Path, Body
 from pydantic import BaseModel, Field
 
 from app.dictionary import query_word, search_words
+from app.goldendict import start_embedded_watcher, stop_embedded_watcher
 from app.vocabulary import (
     add_word,
     delete_word,
@@ -14,6 +17,25 @@ from app.vocabulary import (
     review_word,
     update_word,
 )
+
+log = logging.getLogger("app.main")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """随主应用启停 GoldenDict 监听器（失败不影响 API 服务）"""
+    try:
+        start_embedded_watcher()
+    except Exception:
+        log.exception("GoldenDict 监听启动失败（不影响 API 服务）")
+    try:
+        yield
+    finally:
+        try:
+            stop_embedded_watcher()
+        except Exception:
+            log.exception("GoldenDict 监听停止时出错")
+
 
 app = FastAPI(
     title="OALD 词典 API",
@@ -26,6 +48,7 @@ app = FastAPI(
         "description": "项目 README",
         "url": "/README.md",
     },
+    lifespan=lifespan,
 )
 
 

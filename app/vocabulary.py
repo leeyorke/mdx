@@ -34,19 +34,19 @@ CREATE INDEX IF NOT EXISTS idx_vw_count     ON vocabulary_words(review_count);
 """
 
 
-def _init_db() -> None:
-    """首次使用时自动建表"""
+def _ensure_db() -> None:
+    """确保表结构存在。
+
+    幂等（``_CREATE_SQL`` 全是 ``IF NOT EXISTS``）：不能只看文件是否存在——
+    空文件（被其他进程 connect 过）同样需要建表，否则后续查询会
+    ``no such table``。
+    """
     conn = sqlite3.connect(DB_FILE)
     try:
         conn.executescript(_CREATE_SQL)
         conn.commit()
     finally:
         conn.close()
-
-
-def _ensure_db() -> None:
-    if not DB_FILE.exists():
-        _init_db()
 
 
 # ── Connection helper ───────────────────────────────────────────────

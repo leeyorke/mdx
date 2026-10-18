@@ -7,11 +7,14 @@
 4. 端到端：首次全量导入 -> 再次运行不重复 -> 新词增量导入
 5. 生词本去重：删掉 state 后也不会把生词本已有的词再加进去
 6. API 不可用时不标记已处理，恢复后自动补写
+7. 免打扰时段（00:00-08:00 暂停，跨午夜配置，持续监听可中断）
+8. 写入方式（HTTP / 进程内）与随主 app 启停（lifespan、开关、锁让位）
 
 运行: uv run python -X utf8 script/test_goldendict.py
 """
 
 import gc
+import os
 import socket
 import sqlite3
 import sys
@@ -19,6 +22,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from unittest import mock
 
 import httpx
 import uvicorn
@@ -26,9 +30,15 @@ import uvicorn
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# 测试期间不随主 app 自动启动监听（由专项测试按需开启），避免污染真实数据
+os.environ["MDX_WATCH_AUTOSTART"] = "0"
+
 import app.vocabulary as vocabulary  # noqa: E402
+import app.goldendict as gd  # noqa: E402
 from app.goldendict import (  # noqa: E402
     GoldenDictWatcher,
+    HttpVocabularyWriter,
+    LocalVocabularyWriter,
     SingletonLock,
     State,
     extract_clean_word,
@@ -55,6 +65,19 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         FAIL += 1
         FAILURES.append(name)
         print(f"  ✘ {name} {detail}")
+
+
+def _wait_for(predicate, timeout: float = 15.0, interval: float = 0.2) -> bool:
+    """轮询等待 predicate() 为真（用于等待监听线程完成首次同步）"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if predicate():
+                return True
+        except Exception:
+            pass
+        time.sleep(interval)
+    return False
 
 
 # ── 测试夹具 ──────────────────────────────────────────────────────────
@@ -92,9 +115,13 @@ def write_fixtures(gd_dir: Path) -> None:
 
 
 def db_words(db_path: Path) -> list[str]:
+    if not Path(db_path).exists():
+        return []
     conn = sqlite3.connect(str(db_path))
     try:
         return [r[0] for r in conn.execute("SELECT word FROM vocabulary_words")]
+    except sqlite3.OperationalError:
+        return []  # 库文件已建但表还没建好（并发首写）
     finally:
         conn.close()
 
@@ -326,7 +353,7 @@ def test_end_to_end() -> None:
                 check("API 不可用时 0 写入", len(report5.added) == 0)
                 check("失败的词不被标记为已处理",
                       load_state(watcher2.state_file).processed == set())
-                watcher2.api_base = api_base  # API 恢复
+                watcher2.writer = HttpVocabularyWriter(api_base)  # API 恢复
                 report6 = watcher2.sync_once()
                 check("API 恢复后自动补写", sorted(report6.added) == ["recoversecond", "recoverword"],
                       f"got {report6.added}")
@@ -351,9 +378,6 @@ def test_real_dictionary_translation() -> None:
 def test_quiet_hours() -> None:
     print("[7] 免打扰时段")
     from datetime import datetime
-    from unittest import mock
-
-    import app.goldendict as gd
 
     check("解析 0-8", gd._parse_quiet_hours("0-8") == (0, 8))
     check("解析 22-6（跨午夜）", gd._parse_quiet_hours("22-6") == (22, 6))
@@ -382,10 +406,7 @@ def test_quiet_hours() -> None:
 
 
 def test_run_forever_quiet_hours() -> None:
-    print("[8] 持续监听：免打扰时段暂停轮询")
-    from unittest import mock
-
-    import app.goldendict as gd
+    print("[8] 持续监听：免打扰时段暂停轮询 / stop_event 可中断")
 
     with tempfile.TemporaryDirectory() as td:
         watcher = GoldenDictWatcher(
@@ -402,33 +423,140 @@ def test_run_forever_quiet_hours() -> None:
         class _StopLoop(Exception):
             pass
 
-        def fake_sleep(seconds: float) -> None:
-            sleeps.append(seconds)
-            if len(sleeps) >= 2:
-                raise _StopLoop
+        class _FakeStopEvent:
+            """假的停止事件：wait 第 set_after 次调用时抛出 _StopLoop"""
 
-        def fake_chunks(seconds: float, chunk: float = 60.0) -> None:
+            def __init__(self, set_after: int) -> None:
+                self.set_after = set_after
+                self.calls = 0
+
+            def is_set(self) -> bool:
+                return False
+
+            def wait(self, timeout: float) -> bool:
+                self.calls += 1
+                if self.calls >= self.set_after:
+                    raise _StopLoop
+                return False
+
+        def fake_chunks(seconds: float, chunk: float = 60.0, stop_event=None) -> None:
             quiet_waits.append(seconds)
 
         def fake_sync() -> gd.SyncReport:
             sync_calls["n"] += 1
             return gd.SyncReport()
 
+        stop_event = _FakeStopEvent(set_after=2)
         quiet_states = iter([True, False, False])
 
-        with mock.patch.object(gd.time, "sleep", fake_sleep), \
-             mock.patch.object(gd, "_sleep_in_chunks", fake_chunks), \
+        with mock.patch.object(gd, "_sleep_in_chunks", fake_chunks), \
              mock.patch.object(watcher, "sync_once", fake_sync), \
              mock.patch.object(gd, "in_quiet_hours", lambda: next(quiet_states)), \
              mock.patch.object(gd, "seconds_until_quiet_end", lambda: 1234.0):
             try:
-                watcher.run_forever(interval=3600)
+                watcher.run_forever(interval=3600, stop_event=stop_event)
             except _StopLoop:
                 pass
 
         check("免打扰时段先休眠到结束", quiet_waits == [1234.0], f"got {quiet_waits}")
         check("免打扰期间不执行同步", sync_calls["n"] == 2, f"got {sync_calls}")
-        check("正常时段按 interval 休眠", sleeps == [3600, 3600], f"got {sleeps}")
+        check("正常时段按 interval 等待", stop_event.calls == 2, f"got {stop_event.calls}")
+
+
+def test_writers() -> None:
+    print("[9] 写入方式：进程内 / HTTP")
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "user.db"
+        original_db = vocabulary.DB_FILE
+        vocabulary.DB_FILE = db
+        try:
+            writer = LocalVocabularyWriter()
+            check("进程内写入成功", writer.add("localtestword", "本地测试", "note"))
+            check("进程内写入落库", db_words(db) == ["localtestword"], f"got {db_words(db)}")
+            writer.close()
+        finally:
+            vocabulary.DB_FILE = original_db
+            gc.collect()
+
+    # HTTP writer 指向没有服务的端口 -> 返回 False 而不抛异常
+    http_writer = HttpVocabularyWriter("http://127.0.0.1:59999")
+    check("HTTP 写入失败返回 False", not http_writer.add("x", "y", "z"))
+    http_writer.close()
+
+
+def test_embedded_lifespan() -> None:
+    print("[10] 随主 app 启停（lifespan）")
+    from fastapi.testclient import TestClient
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        gd_dir = tmp / "gd"
+        gd_dir.mkdir()
+        (gd_dir / "history").write_text("0 lifespantestword\n", encoding="utf-8")
+        (gd_dir / "favorites").write_text(
+            "<root>\n <headword>lifespanfavword</headword>\n</root>\n", encoding="utf-8"
+        )
+        vocab_db = tmp / "user.db"
+        state_file = tmp / "state.json"
+
+        with mock.patch.object(gd, "DEFAULT_GOLDENDICT_DIR", gd_dir), \
+             mock.patch.object(gd, "DEFAULT_STATE_FILE", state_file), \
+             mock.patch.object(gd, "QUIET_HOURS", None), \
+             mock.patch.object(vocabulary, "DB_FILE", vocab_db), \
+             mock.patch.dict(os.environ, {"MDX_WATCH_AUTOSTART": "1"}):
+            with TestClient(fastapi_app):
+                check(
+                    "lifespan 启动后监听器自动导入新词",
+                    _wait_for(
+                        lambda: {"lifespantestword", "lifespanfavword"}
+                        <= set(db_words(vocab_db)),
+                        timeout=15,
+                    ),
+                    f"got {db_words(vocab_db) if vocab_db.exists() else '无库'}",
+                )
+                thread = gd._embedded_thread
+                check("监听线程已启动", thread is not None and thread.is_alive())
+                check("监听线程为 daemon", thread is not None and thread.daemon)
+            # 退出 with：lifespan shutdown -> stop_embedded_watcher
+            thread = gd._embedded_thread
+            check("主应用停止后监听线程退出", thread is None or not thread.is_alive())
+            lock = SingletonLock(state_file.parent / "goldendict_watcher.lock")
+            check("停止后锁已释放", lock.acquire())
+            lock.release()
+
+
+def test_embedded_autostart_and_lock() -> None:
+    print("[11] 随主 app 启停：开关与锁让位")
+    from fastapi.testclient import TestClient
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        state_file = tmp / "state.json"
+        patches = [
+            mock.patch.object(gd, "DEFAULT_GOLDENDICT_DIR", tmp / "gd"),
+            mock.patch.object(gd, "DEFAULT_STATE_FILE", state_file),
+            mock.patch.object(gd, "QUIET_HOURS", None),
+            mock.patch.object(vocabulary, "DB_FILE", tmp / "user.db"),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            # 开关关闭
+            with mock.patch.dict(os.environ, {"MDX_WATCH_AUTOSTART": "0"}):
+                with TestClient(fastapi_app):
+                    check("MDX_WATCH_AUTOSTART=0 时不启动监听", gd._embedded_thread is None)
+
+            # 锁被独立监听占用 -> 让位且不影响 API 启动
+            lock = SingletonLock(state_file.parent / "goldendict_watcher.lock")
+            check("预占锁成功", lock.acquire())
+            with mock.patch.dict(os.environ, {"MDX_WATCH_AUTOSTART": "1"}):
+                with TestClient(fastapi_app):
+                    check("锁被占用时跳过启动且不抛错", gd._embedded_thread is None)
+            lock.release()
+        finally:
+            for p in patches:
+                p.stop()
+            gc.collect()
 
 
 def main() -> int:
@@ -440,6 +568,9 @@ def main() -> int:
     test_real_dictionary_translation()
     test_quiet_hours()
     test_run_forever_quiet_hours()
+    test_writers()
+    test_embedded_lifespan()
+    test_embedded_autostart_and_lock()
 
     print()
     print(f"通过 {PASS} 项，失败 {FAIL} 项")

@@ -20,6 +20,11 @@
    多行格式生成 ``translation``；词典未收录时写入占位符。
 5. **轮询节奏**：默认每小时轮询一次；00:00–08:00 为免打扰时段，暂停轮询，
    08:00 自动恢复（环境变量 ``MDX_WATCH_QUIET_HOURS`` 可调整，置空关闭）。
+6. **两种运行方式**：
+   - 独立进程：``python -m app.goldendict``（首次导入 ``--once`` / 预览
+     ``--dry-run``），通过 HTTP API 写入；
+   - 随主 app 嵌入：启动 uvicorn 时自动开始监听、主应用停止时自动结束，
+     进程内调用 API 使用的同一数据层写入（见 ``start_embedded_watcher``）。
 
 用法::
 
@@ -43,6 +48,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -52,7 +58,7 @@ from typing import Optional
 import httpx
 
 from app.dictionary import query_word
-from app.vocabulary import DB_FILE as DEFAULT_VOCAB_DB
+from app.vocabulary import DB_FILE as DEFAULT_VOCAB_DB, add_word
 
 log = logging.getLogger("goldendict")
 
@@ -66,8 +72,13 @@ DEFAULT_GOLDENDICT_DIR = Path(
 DEFAULT_API_BASE = os.environ.get("MDX_API_BASE_URL", "http://127.0.0.1:8000").rstrip(
     "/"
 )
-DEFAULT_STATE_FILE = PROJECT_ROOT / "data" / "goldendict_state.json"
-DEFAULT_LOCK_FILE = PROJECT_ROOT / "data" / "goldendict_watcher.lock"
+DEFAULT_STATE_FILE = Path(
+    os.environ.get(
+        "MDX_WATCH_STATE_FILE", PROJECT_ROOT / "data" / "goldendict_state.json"
+    )
+)
+# 锁文件始终放在 state 文件同目录（与 start_embedded_watcher 保持一致）
+DEFAULT_LOCK_FILE = DEFAULT_STATE_FILE.parent / "goldendict_watcher.lock"
 DEFAULT_POLL_INTERVAL = float(os.environ.get("MDX_WATCH_INTERVAL", "3600"))
 HTTP_TIMEOUT = float(os.environ.get("MDX_WATCH_HTTP_TIMEOUT", "10"))
 
@@ -338,14 +349,76 @@ def seconds_until_quiet_end(now: Optional[datetime] = None) -> float:
     return (end - now).total_seconds()
 
 
-def _sleep_in_chunks(seconds: float, chunk: float = 60.0) -> None:
-    """分片休眠（默认每片 60 秒），保证 Ctrl+C 能及时中断长睡眠"""
+def _sleep_in_chunks(
+    seconds: float,
+    chunk: float = 60.0,
+    stop_event: Optional[threading.Event] = None,
+) -> None:
+    """分片休眠（默认每片 60 秒）。
+
+    提供 stop_event 时每片都用 ``stop_event.wait``，主应用关闭能立即唤醒；
+    否则退回 ``time.sleep``（Ctrl+C 可中断）。
+    """
     deadline = time.monotonic() + max(0.0, seconds)
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return
-        time.sleep(min(chunk, remaining))
+        if stop_event is not None:
+            if stop_event.wait(min(chunk, remaining)):
+                return
+        else:
+            time.sleep(min(chunk, remaining))
+
+
+# ── 写入生词本的两种方式 ──────────────────────────────────────────────
+
+
+class HttpVocabularyWriter:
+    """通过 HTTP API 写入生词本（独立进程模式）"""
+
+    def __init__(self, api_base: str) -> None:
+        self.api_base = api_base.rstrip("/")
+        # 监听目标始终是本机 API，不走代理环境变量
+        self._client = httpx.Client(
+            base_url=self.api_base, timeout=HTTP_TIMEOUT, trust_env=False
+        )
+
+    def add(self, word: str, translation: str, note: str) -> bool:
+        payload = {"word": word, "translation": translation, "note": note}
+        try:
+            resp = self._client.post("/api/vocabulary", json=payload)
+        except httpx.HTTPError as e:
+            log.error("API 请求失败 %s: %s", word, e)
+            return False
+        if resp.status_code != 200:
+            log.error(
+                "加入生词本失败 %s: HTTP %s %s", word, resp.status_code, resp.text[:200]
+            )
+            return False
+        return True
+
+    def close(self) -> None:
+        self._client.close()
+
+
+class LocalVocabularyWriter:
+    """进程内写入生词本（随主 app 嵌入模式）。
+
+    调用 ``app.vocabulary.add_word``——即 ``POST /api/vocabulary`` 端点内部
+    使用的同一个数据层函数；不依赖端口 / 网络 / ASGI 桥接。
+    """
+
+    def add(self, word: str, translation: str, note: str) -> bool:
+        try:
+            add_word(word=word, translation=translation, note=note)
+        except Exception as e:
+            log.error("写入生词本失败 %s: %s", word, e)
+            return False
+        return True
+
+    def close(self) -> None:
+        pass
 
 
 # ── 监听器 ────────────────────────────────────────────────────────────
@@ -360,13 +433,24 @@ class GoldenDictWatcher:
         state_file: Optional[Path] = None,
         vocab_db: Optional[Path] = None,
         dry_run: bool = False,
+        writer=None,
     ) -> None:
         self.goldendict_dir = Path(goldendict_dir or DEFAULT_GOLDENDICT_DIR)
         self.api_base = (api_base or DEFAULT_API_BASE).rstrip("/")
         self.state_file = Path(state_file or DEFAULT_STATE_FILE)
         self.vocab_db = Path(vocab_db or DEFAULT_VOCAB_DB)
         self.dry_run = dry_run
+        # writer：独立进程默认走 HTTP API；嵌入模式注入 LocalVocabularyWriter
+        self._owns_writer = writer is None
+        self.writer = writer if writer is not None else HttpVocabularyWriter(
+            self.api_base
+        )
         self.state = load_state(self.state_file)
+
+    def close(self) -> None:
+        """释放 writer 持有的资源（仅限自己创建的 writer）"""
+        if self._owns_writer:
+            self.writer.close()
 
     # ── 读取与解析 ──
 
@@ -432,36 +516,15 @@ class GoldenDictWatcher:
             return NO_TRANSLATION
         return format_translation(entry) or NO_TRANSLATION
 
-    # ── API ──
+    # ── 写入 ──
 
-    def _make_client(self) -> httpx.Client:
-        """创建 HTTP 客户端。
-
-        监听目标始终是本机 API，不使用代理环境变量（trust_env=False），
-        同时避免某些代理环境变量导致 httpx 解析失败。
-        """
-        return httpx.Client(
-            base_url=self.api_base, timeout=HTTP_TIMEOUT, trust_env=False
-        )
-
-    def _add_word(self, client: httpx.Client, word: str, source: str) -> bool:
-        payload = {
+    def _build_payload(self, word: str, source: str) -> dict:
+        """构造写入生词本的 payload（translation 查词典生成）"""
+        return {
             "word": word,
             "translation": self._lookup_translation(word),
             "note": f"来源：GoldenDict {SOURCE_LABELS.get(source, source)} 自动导入",
         }
-        try:
-            resp = client.post("/api/vocabulary", json=payload)
-        except httpx.HTTPError as e:
-            log.error("API 请求失败 %s: %s", word, e)
-            return False
-        if resp.status_code == 200:
-            log.info("已加入生词本: %s（来源 %s）", word, source)
-            return True
-        log.error(
-            "加入生词本失败 %s: HTTP %s %s", word, resp.status_code, resp.text[:200]
-        )
-        return False
 
     # ── 主流程 ──
 
@@ -498,46 +561,49 @@ class GoldenDictWatcher:
             return report
 
         if to_add:
-            client = self._make_client()
-            try:
-                for word, source in to_add:
-                    if self._add_word(client, word, source):
-                        # 只有写入成功才标记为已处理，失败的下一轮重试
-                        processed.add(word)
-                        report.added.append(word)
-                        self.state.total_added += 1
-                        self.state.added_by_source[source] = (
-                            self.state.added_by_source.get(source, 0) + 1
-                        )
-                    else:
-                        report.errors.append(f"加入生词本失败: {word}")
-            finally:
-                client.close()
+            for word, source in to_add:
+                payload = self._build_payload(word, source)
+                if self.writer.add(word, payload["translation"], payload["note"]):
+                    # 只有写入成功才标记为已处理，失败的下一轮重试
+                    processed.add(word)
+                    report.added.append(word)
+                    self.state.total_added += 1
+                    self.state.added_by_source[source] = (
+                        self.state.added_by_source.get(source, 0) + 1
+                    )
+                    log.info("已加入生词本: %s（来源 %s）", word, source)
+                else:
+                    report.errors.append(f"加入生词本失败: {word}")
 
         self.state.initialized = True
         self.state.last_sync_at = _now_iso()
         save_state(self.state_file, self.state)
         return report
 
-    def run_forever(self, interval: float = DEFAULT_POLL_INTERVAL) -> None:
+    def run_forever(
+        self,
+        interval: float = DEFAULT_POLL_INTERVAL,
+        stop_event: Optional[threading.Event] = None,
+    ) -> None:
+        """持续监听；stop_event 置位时尽快退出（供随主 app 嵌入模式使用）"""
+        stop_event = stop_event if stop_event is not None else threading.Event()
         quiet_desc = (
             f"{QUIET_HOURS[0]:02d}:00-{QUIET_HOURS[1]:02d}:00 免打扰"
             if QUIET_HOURS
             else "无免打扰时段"
         )
         log.info(
-            "开始监听 %s（每 %.0f 秒一次，%s，API: %s，state: %s）",
+            "开始监听 %s（每 %.0f 秒一次，%s，state: %s）",
             self.goldendict_dir,
             interval,
             quiet_desc,
-            self.api_base,
             self.state_file,
         )
-        while True:
+        while not stop_event.is_set():
             if in_quiet_hours():
                 wait = seconds_until_quiet_end()
                 log.info("免打扰时段内，暂停轮询，约 %.0f 分钟后恢复", wait / 60)
-                _sleep_in_chunks(wait)
+                _sleep_in_chunks(wait, stop_event=stop_event)
                 continue
             try:
                 report = self.sync_once()
@@ -547,7 +613,9 @@ class GoldenDictWatcher:
                     log.debug("同步完成: %s", report.summary())
             except Exception:
                 log.exception("同步过程发生异常，%.0f 秒后重试", interval)
-            time.sleep(interval)
+            if stop_event.wait(interval):
+                break  # 等待期间收到停止信号
+        log.info("监听循环已结束")
 
 
 # ── 单实例锁（防止多个监听进程重复写入） ──────────────────────────────
@@ -585,6 +653,95 @@ class SingletonLock:
                 pass
             self._fh.close()
             self._fh = None
+
+
+# ── 随主 app 嵌入模式 ─────────────────────────────────────────────────
+
+_embedded_lock: Optional[SingletonLock] = None
+_embedded_watcher: Optional[GoldenDictWatcher] = None
+_embedded_thread: Optional[threading.Thread] = None
+_embedded_stop: Optional[threading.Event] = None
+
+
+def start_embedded_watcher() -> bool:
+    """随主 app 启动监听（守护线程），供 FastAPI lifespan 调用。
+
+    - ``MDX_WATCH_AUTOSTART=0`` 时不启动；
+    - 锁被占用（已有独立监听进程在跑）时跳过，避免双写；
+    - 任何失败只记日志并返回 False，**不影响主应用启动**。
+    """
+    global _embedded_lock, _embedded_watcher, _embedded_thread, _embedded_stop
+    if _embedded_thread is not None:
+        return True  # 已在运行
+    if os.environ.get("MDX_WATCH_AUTOSTART", "1") == "0":
+        log.info("MDX_WATCH_AUTOSTART=0，不随主 app 启动监听")
+        return False
+
+    # uvicorn 默认只配置自己的 logger，这里保证监听日志可见
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+        )
+
+    lock = SingletonLock(DEFAULT_STATE_FILE.parent / "goldendict_watcher.lock")
+    if not lock.acquire():
+        log.warning(
+            "已有 GoldenDict 监听在运行（锁文件 %s），本实例跳过自动监听",
+            lock.lock_file,
+        )
+        return False
+
+    try:
+        from app import vocabulary as vocabulary_module
+
+        # vocab_db 在调用时解析，便于测试替换；其余用模块级默认值
+        watcher = GoldenDictWatcher(
+            writer=LocalVocabularyWriter(),
+            vocab_db=vocabulary_module.DB_FILE,
+        )
+    except Exception:
+        log.exception("创建监听器失败，本实例跳过自动监听")
+        lock.release()
+        return False
+
+    stop_event = threading.Event()
+    thread = threading.Thread(
+        target=watcher.run_forever,
+        kwargs={"stop_event": stop_event},
+        name="goldendict-watcher",
+        daemon=True,
+    )
+    thread.start()
+    _embedded_lock = lock
+    _embedded_watcher = watcher
+    _embedded_thread = thread
+    _embedded_stop = stop_event
+    log.info("GoldenDict 监听已随主 app 启动（守护线程 %s）", thread.name)
+    return True
+
+
+def stop_embedded_watcher(timeout: float = 10.0) -> None:
+    """停止随主 app 启动的监听（主应用关闭时调用）"""
+    global _embedded_lock, _embedded_watcher, _embedded_thread, _embedded_stop
+    if _embedded_thread is None:
+        return
+    if _embedded_stop is not None:
+        _embedded_stop.set()
+    if _embedded_thread.is_alive():
+        _embedded_thread.join(timeout=timeout)
+        if _embedded_thread.is_alive():
+            log.warning("监听线程未能在 %.0f 秒内退出（守护线程将随进程结束）", timeout)
+    try:
+        if _embedded_watcher is not None:
+            _embedded_watcher.close()
+    finally:
+        if _embedded_lock is not None:
+            _embedded_lock.release()
+        _embedded_lock = None
+        _embedded_watcher = None
+        _embedded_thread = None
+        _embedded_stop = None
+    log.info("GoldenDict 监听已停止")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────
@@ -659,8 +816,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             for err in report.errors:
                 log.error("%s", err)
             return 1 if report.errors else 0
-        watcher.run_forever(interval=args.interval)
+        try:
+            watcher.run_forever(interval=args.interval)
+        except KeyboardInterrupt:
+            log.info("收到中断信号，监听停止")
     finally:
+        watcher.close()
         lock.release()
     return 0
 

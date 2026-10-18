@@ -1,7 +1,22 @@
 # GoldenDict 监听自动入生词本
 
-`app/goldendict.py` 监听 GoldenDict 的三个文本文件，把出现的新词通过 API
-（`POST /api/vocabulary`）写入生词本。
+`app/goldendict.py` 监听 GoldenDict 的三个文本文件，把出现的新词写入生词本。
+
+## 运行方式
+
+| 方式 | 启动 | 写入路径 |
+|------|------|----------|
+| **随主 app 嵌入（默认）** | 启动 uvicorn 即自动开始；主应用退出（Ctrl+C / kill）监听立即结束 | 进程内调用 `app.vocabulary.add_word`（`POST /api/vocabulary` 端点内部使用的同一个函数） |
+| 独立进程 | `python -m app.goldendict`（`--once` 只同步一次，`--dry-run` 预览） | HTTP `POST /api/vocabulary` |
+
+嵌入模式通过 FastAPI `lifespan` 钩子实现（`app/main.py`）：
+
+- 启动时创建守护线程 `goldendict-watcher` 跑 `run_forever(stop_event=...)`；
+- 关闭时置位 stop_event 并 join（10 秒超时），免打扰时段的长睡眠也会被立即唤醒；
+- `MDX_WATCH_AUTOSTART=0` 可关闭自动监听；独立 CLI 不受该开关影响；
+- 启动/停止任何异常只记日志，**不影响 API 服务**；
+- 与独立进程共用同一把文件锁：已有独立监听在跑时，嵌入实例打 warning 后让位，不双写；
+  `uvicorn --workers N` 时同理，只有一个实例真正写入。
 
 ## 监听的文件与格式
 
@@ -42,7 +57,6 @@
 
 - `word`：提取出的干净单词（小写）；
 - `translation`：自动查询词典库（`oaldpe.db`）生成的多行释义，样式与既有生词一致：
-
   ```
   competitor
   英 /kəmˈpetɪtə(r)/ 美 /kəmˈpetɪtər/
@@ -62,10 +76,12 @@
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `GOLDENDICT_DIR` | `C:\Users\leeyorke\AppData\Roaming\GoldenDict` | GoldenDict 配置目录 |
-| `MDX_API_BASE_URL` | `http://127.0.0.1:8000` | 生词本 API 地址 |
+| `MDX_API_BASE_URL` | `http://127.0.0.1:8000` | 生词本 API 地址（仅独立进程模式使用） |
 | `MDX_WATCH_INTERVAL` | `3600` | 轮询间隔（秒，默认 1 小时） |
 | `MDX_WATCH_QUIET_HOURS` | `0-8` | 免打扰时段（小时，`起始-结束`，支持跨午夜如 `22-6`；置空关闭） |
-| `MDX_WATCH_HTTP_TIMEOUT` | `10` | API 请求超时（秒） |
+| `MDX_WATCH_AUTOSTART` | `1` | 是否随主 app 自动启动监听（`0` 关闭） |
+| `MDX_WATCH_STATE_FILE` | `data/goldendict_state.json` | state 文件路径（锁文件放在同目录） |
+| `MDX_WATCH_HTTP_TIMEOUT` | `10` | API 请求超时（秒，仅独立进程模式） |
 
 state 文件（`data/goldendict_state.json`）记录 `initialized`、`processed`（已处理
 单词集合）、`total_added`、`added_by_source`、`last_sync_at`，损坏时安全降级
@@ -77,6 +93,8 @@ state 文件（`data/goldendict_state.json`）记录 `initialized`、`processed`
 uv run python -X utf8 script/test_goldendict.py
 ```
 
-66 项检查：三种格式解析、干净单词提取、翻译格式化、state 读写、单实例锁、免打扰时段
-（含跨午夜配置与持续监听暂停逻辑），以及基于真实 uvicorn 服务的端到端场景
-（首次导入 / 再次运行不重复 / 新词增量 / state 丢失不重复 / API 故障恢复补写）。
+77 项检查：三种格式解析、干净单词提取、翻译格式化、state 读写、单实例锁、免打扰时段
+（含跨午夜配置与持续监听暂停逻辑）、两种写入方式（HTTP / 进程内）、随主 app 启停
+（lifespan 自动导入、daemon 线程、停止后线程退出与锁释放、开关关闭、锁让位），
+以及基于真实 uvicorn 服务的端到端场景（首次导入 / 再次运行不重复 / 新词增量 /
+state 丢失不重复 / API 故障恢复补写）。
