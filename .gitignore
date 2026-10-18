@@ -10,6 +10,7 @@ ngsl.db
 MdxScraper/output/*
 tmp.html
 __pycache__/
+data/
 
 # General ignore rules from template
 #################
