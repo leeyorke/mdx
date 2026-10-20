@@ -14,6 +14,17 @@
 | `PATCH` | `/api/vocabulary/{word_id}` | 更新生词（star / translation / note） |
 | `DELETE` | `/api/vocabulary/{word_id}` | 删除生词 |
 | `POST` | `/api/vocabulary/{word_id}/review` | 标记复习一次 |
+| `GET` | `/api/review/status` | 复习提醒状态（队列、今日推送、下次到期、通知是否可用） |
+| `GET` | `/api/review/config` | 读取复习提醒配置 |
+| `PUT` | `/api/review/config` | 更新复习提醒配置 |
+| `POST` | `/api/review/sync` | 用生词本对齐复习队列 |
+| `POST` | `/api/review/tick` | 立刻跑一轮调度（推送 Windows 通知） |
+| `DELETE` | `/api/review/queue` | 清空复习队列 |
+| `GET` | `/api/review/card?word_id=` | 取一张待复习卡片 |
+| `POST` | `/api/review/rate` | 记录复习评分，返回下一张卡片 |
+| `POST` | `/api/review/notify-test` | 发送一条测试通知 |
+| `GET` | `/api/review/pending` | 待评分的词列表 |
+| `GET` | `/review` | 复习页面（复习 + 配置） |
 | `GET` | `/docs` | Swagger UI 交互文档（FastAPI 自动生成） |
 
 ## 请求及响应示例

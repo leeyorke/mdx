@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mdx · 复习提醒</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --fg: #1c1f24;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --accent: #2563eb;
+    --accent-fg: #ffffff;
+    --ok: #16a34a;
+    --warn: #d97706;
+    --danger: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --card: #1c1f25;
+      --fg: #e6e8ec;
+      --muted: #9aa2ae;
+      --line: #2b303a;
+      --accent: #3b82f6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 64px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px;
+    margin-top: 16px;
+  }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .spread { justify-content: space-between; }
+  .word { font-size: 40px; font-weight: 700; letter-spacing: -0.5px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .stat dt { font-size: 12px; color: var(--muted); margin: 0; }
+  .stat dd { font-size: 18px; font-weight: 600; margin: 2px 0 0; }
+  button {
+    font: inherit;
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  button.good { background: var(--ok); border-color: var(--ok); color: #fff; }
+  button.bad { background: var(--danger); border-color: var(--danger); color: #fff; }
+  input, select {
+    font: inherit; padding: 6px 9px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg); width: 100%;
+  }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .field { margin-bottom: 12px; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .translation { white-space: pre-wrap; font-size: 15px; }
+  .example { background: var(--bg); border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+  .collocation { display: inline-block; margin: 4px 6px 0 0; }
+  #toast {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 24px;
+    background: #111; color: #fff; padding: 9px 16px; border-radius: 8px;
+    font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  #toast.show { opacity: .95; }
+  .hidden { display: none !important; }
+  details summary { cursor: pointer; font-size: 15px; font-weight: 600; }
+  .switch { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--fg); }
+  .switch input { width: auto; }
+  .defs { margin: 8px 0 0; padding-left: 18px; font-size: 14px; }
+  .defs li { margin-bottom: 3px; }
+  .zh { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>mdx · 复习提醒</h1>
+      <div class="muted small" id="subtitle">艾宾浩斯主动复习 · 通知点击后回到这里</div>
+    </div>
+    <div class="row">
+      <label class="switch"><input type="checkbox" id="enabled" /> 开启复习提醒</label>
+    </div>
+  </header>
+
+  <section class="card" id="card-area">
+    <div id="card-empty" class="muted">加载中…</div>
+    <div id="card-body" class="hidden">
+      <div class="row spread">
+        <div>
+          <div class="word" id="c-word">—</div>
+          <div class="muted small" id="c-meta"></div>
+        </div>
+        <button id="speak" title="朗读">🔊 发音</button>
+      </div>
+      <div class="translation" id="c-translation" style="margin-top:12px"></div>
+      <div class="example hidden" id="c-example-wrap">
+        <div id="c-example"></div>
+        <div class="zh small" id="c-example-zh"></div>
+        <div id="c-collocation"></div>
+      </div>
+      <div id="c-def-wrap" class="hidden" style="margin-top:12px">
+        <div class="muted small">词典释义</div>
+        <ul class="defs" id="c-defs"></ul>
+      </div>
+      <div class="row" style="margin-top:18px">
+        <button class="bad" id="rate-forgotten">忘了</button>
+        <button class="good" id="rate-remembered">记得</button>
+        <span class="muted small" id="c-remaining"></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>状态</h2>
+    <dl class="grid">
+      <div class="stat"><dt>队列</dt><dd id="s-queue">0</dd></div>
+      <div class="stat"><dt>今日推送</dt><dd id="s-today">0</dd></div>
+      <div class="stat"><dt>待评分</dt><dd id="s-pending">0</dd></div>
+      <div class="stat"><dt>已毕业</dt><dd id="s-graduated">0</dd></div>
+      <div class="stat"><dt>下次到期</dt><dd id="s-next" class="small">—</dd></div>
+    </dl>
+    <div class="row" style="margin-top:14px">
+      <button id="sync">同步队列</button>
+      <button id="tick" class="primary">立即推送</button>
+      <button id="test-notify">测试通知</button>
+      <button id="clear" class="danger">清空队列</button>
+    </div>
+    <div class="muted small" id="s-note" style="margin-top:10px"></div>
+  </section>
+
+  <section class="card">
+    <details id="settings">
+      <summary>配置</summary>
+      <div style="margin-top:14px">
+        <div class="grid">
+          <div class="field">
+            <label for="max-per-day">每天最多推送</label>
+            <input type="number" id="max-per-day" min="1" max="50" />
+          </div>
+          <div class="field">
+            <label for="max-per-word">每词每天最多推送</label>
+            <input type="number" id="max-per-word" min="1" max="10" />
+          </div>
+          <div class="field">
+            <label for="graduated">走完阶梯后</label>
+            <select id="graduated">
+              <option value="stop">停止复习</option>
+              <option value="restart">从头再来</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="switch"><input type="checkbox" id="qh-enabled" /> 免打扰时段</label>
+          </div>
+          <div class="field">
+            <label for="qh-start">免打扰开始</label>
+            <input type="time" id="qh-start" />
+          </div>
+          <div class="field">
+            <label for="qh-end">免打扰结束</label>
+            <input type="time" id="qh-end" />
+          </div>
+        </div>
+        <div class="field">
+          <label class="switch"><input type="checkbox" id="generate-example" /> 用 LLM 生成例句（不勾则用收藏时的上下文）</label>
+        </div>
+        <div class="field">
+          <label for="llm-base">LLM Base URL（OpenAI 兼容，可留空）</label>
+          <input type="text" id="llm-base" placeholder="https://api.openai.com/v1" />
+        </div>
+        <div class="field">
+          <label for="llm-key">LLM API Key</label>
+          <input type="password" id="llm-key" placeholder="sk-..." />
+        </div>
+        <div class="field">
+          <label for="llm-model">LLM 模型</label>
+          <input type="text" id="llm-model" placeholder="gpt-4o-mini" />
+        </div>
+        <div class="field">
+          <label for="open-url">通知点击后打开的地址（{word_id} 会被替换）</label>
+          <input type="text" id="open-url" />
+        </div>
+        <button class="primary" id="save">保存配置</button>
+        <span class="muted small" id="save-note"></span>
+      </div>
+    </details>
+  </section>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const api = async (path, options = {}) => {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch { /* 忽略 */ }
+    throw new Error(detail);
+  }
+  if (res.status === 204) return null;
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+};
+
+let toastTimer = null;
+function toast(message) {
+  const el = $("toast");
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
+}
+
+function formatTime(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+let currentCard = null;
+
+function renderCard(card) {
+  currentCard = card;
+  const empty = $("card-empty");
+  const body = $("card-body");
+  if (!card) {
+    empty.textContent = "暂时没有需要复习的词。可以点「立即推送」或「同步队列」试试。";
+    empty.classList.remove("hidden");
+    body.classList.add("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  body.classList.remove("hidden");
+
+  $("c-word").textContent = card.word || "";
+  $("c-meta").innerHTML =
+    `第 ${(card.stage ?? 0) + 1} / ${card.total_stages ?? 0} 阶` +
+    (card.last_notified_at ? ` · 推送于 ${formatTime(card.last_notified_at)}` : "");
+  $("c-translation").textContent = card.translation || "";
+
+  const hasExample = !!(card.example || "").trim();
+  $("c-example-wrap").classList.toggle("hidden", !hasExample);
+  $("c-example").textContent = card.example || "";
+  $("c-example-zh").textContent = card.sentence_chinese || "";
+  const collocations = card.collocations || [];
+  $("c-collocation").innerHTML = collocations
+    .map(c => `<span class="pill collocation">${escapeHtml(c)}</span>`)
+    .join("");
+
+  const def = card.definition;
+  const senses = (def && def.senses) || [];
+  $("c-def-wrap").classList.toggle("hidden", senses.length === 0);
+  $("c-defs").innerHTML = senses
+    .map(s => {
+      const en = s.definition || "";
+      const zh = s.chinese_definition || "";
+      return `<li>${escapeHtml(en)}${zh ? ` <span class="zh">— ${escapeHtml(zh)}</span>` : ""}</li>`;
+    })
+    .join("");
+
+  $("c-remaining").textContent = card.pending_count > 1 ? `还有 ${card.pending_count - 1} 个待评分` : "";
+}
+
+function escapeHtml(text) {
+  return String(text ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function renderStatus(status) {
+  $("s-queue").textContent = status.queue_size ?? 0;
+  $("s-today").textContent = status.today_count ?? 0;
+  $("s-pending").textContent = status.pending_count ?? 0;
+  $("s-graduated").textContent = status.graduated_count ?? 0;
+  $("s-next").textContent = status.next_due_at ? formatTime(status.next_due_at) : "—";
+
+  const notes = [];
+  if (!status.notification_available) {
+    notes.push("当前环境无法发送 Windows 通知（需要 Windows + windows-toasts）。");
+  }
+  if (status.last_sync_at) {
+    notes.push(`上次同步：${formatTime(status.last_sync_at)}`);
+  }
+  $("s-note").textContent = notes.join(" ");
+
+  const cfg = status.config || {};
+  $("enabled").checked = !!cfg.enabled;
+  $("max-per-day").value = cfg.max_per_day ?? 8;
+  $("max-per-word").value = cfg.max_per_word_per_day ?? 3;
+  $("graduated").value = cfg.graduated_action ?? "stop";
+  const qh = cfg.quiet_hours || {};
+  $("qh-enabled").checked = !!qh.enabled;
+  $("qh-start").value = qh.start ?? "23:00";
+  $("qh-end").value = qh.end ?? "08:00";
+  $("generate-example").checked = cfg.generate_example !== false;
+  $("llm-base").value = (cfg.llm && cfg.llm.base_url) || "";
+  $("llm-key").value = (cfg.llm && cfg.llm.api_key) || "";
+  $("llm-model").value = (cfg.llm && cfg.llm.model) || "";
+  $("open-url").value = cfg.open_url_template ?? "";
+}
+
+async function refreshStatus() {
+  try {
+    renderStatus(await api("/api/review/status"));
+  } catch (error) {
+    toast(`读取状态失败：${error.message}`);
+  }
+}
+
+async function loadCard(wordId) {
+  try {
+    const query = wordId ? `?word_id=${encodeURIComponent(wordId)}` : "";
+    renderCard(await api(`/api/review/card${query}`));
+  } catch (error) {
+    toast(`加载卡片失败：${error.message}`);
+  }
+}
+
+async function rate(kind) {
+  if (!currentCard) return;
+  try {
+    const next = await api("/api/review/rate", {
+      method: "POST",
+      body: JSON.stringify({ word_id: currentCard.word_id, kind }),
+    });
+    renderCard(next);
+    refreshStatus();
+  } catch (error) {
+    toast(`评分失败：${error.message}`);
+  }
+}
+
+$("rate-remembered").addEventListener("click", () => rate("remembered"));
+$("rate-forgotten").addEventListener("click", () => rate("forgotten"));
+
+$("speak").addEventListener("click", () => {
+  if (!currentCard || !window.speechSynthesis) {
+    toast("当前浏览器不支持朗读");
+    return;
+  }
+  const utter = new SpeechSynthesisUtterance(currentCard.word);
+  utter.lang = currentCard.source_language || "en-US";
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utter);
+});
+
+$("sync").addEventListener("click", async () => {
+  try {
+    const result = await api("/api/review/sync", { method: "POST" });
+    toast(`已同步：新增 ${result.added}，移除 ${result.removed}`);
+    refreshStatus();
+  } catch (error) {
+    toast(`同步失败：${error.message}`);
+  }
+});
+
+$("tick").addEventListener("click", async () => {
+  try {
+    const result = await api("/api/review/tick", { method: "POST" });
+    const reasons = {
+      disabled: "复习提醒未开启",
+      quietHours: "免打扰时段内",
+      dailyCap: "今天的推送额度用完了",
+      perWordCap: "这些词今天的额度用完了",
+      nothingDue: "暂时没有到期的词",
+    };
+    if (result.pushed) toast(`已推送 ${result.pushed} 条提醒`);
+    else if (result.failed) toast(`推送失败 ${result.failed} 条`);
+    else toast(reasons[result.stopped_because] || "没有推送任何提醒");
+    refreshStatus();
+    loadCard();
+  } catch (error) {
+    toast(`推送失败：${error.message}`);
+  }
+});
+
+$("test-notify").addEventListener("click", async () => {
+  try {
+    const result = await api("/api/review/notify-test", { method: "POST" });
+    toast(`测试通知已发送（点击会打开 ${result.open_url}）`);
+  } catch (error) {
+    toast(`测试通知失败：${error.message}`);
+  }
+});
+
+$("clear").addEventListener("click", async () => {
+  if (!confirm("确定清空复习队列吗？生词本不会受影响。")) return;
+  try {
+    await api("/api/review/queue", { method: "DELETE" });
+    toast("复习队列已清空");
+    refreshStatus();
+    loadCard();
+  } catch (error) {
+    toast(`清空失败：${error.message}`);
+  }
+});
+
+$("save").addEventListener("click", async () => {
+  const payload = {
+    enabled: $("enabled").checked,
+    generate_example: $("generate-example").checked,
+    max_per_day: Number($("max-per-day").value || 8),
+    max_per_word_per_day: Number($("max-per-word").value || 3),
+    graduated_action: $("graduated").value,
+    quiet_hours: {
+      enabled: $("qh-enabled").checked,
+      start: $("qh-start").value || "23:00",
+      end: $("qh-end").value || "08:00",
+    },
+    open_url_template: $("open-url").value.trim(),
+    llm: {
+      base_url: $("llm-base").value.trim(),
+      api_key: $("llm-key").value.trim(),
+      model: $("llm-model").value.trim(),
+    },
+  };
+  try {
+    await api("/api/review/config", { method: "PUT", body: JSON.stringify(payload) });
+    $("save-note").textContent = "已保存";
+    setTimeout(() => ($("save-note").textContent = ""), 2000);
+    refreshStatus();
+  } catch (error) {
+    toast(`保存失败：${error.message}`);
+  }
+});
+
+$("enabled").addEventListener("change", () => {
+  $("save").click();
+});
+
+const params = new URLSearchParams(location.search);
+loadCard(params.get("word"));
+refreshStatus();
+</script>
+</body>
+</html>

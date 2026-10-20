@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 from app.dictionary import query_word, search_words
 from app.goldendict import start_embedded_watcher, stop_embedded_watcher
+from app.review.api import router as review_router
+from app.review.scheduler import scheduler as review_scheduler
 from app.vocabulary import (
     add_word,
     delete_word,
@@ -23,14 +25,22 @@ log = logging.getLogger("app.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """随主应用启停 GoldenDict 监听器（失败不影响 API 服务）"""
+    """随主应用启停 GoldenDict 监听器与复习提醒调度器（失败不影响 API 服务）"""
     try:
         start_embedded_watcher()
     except Exception:
         log.exception("GoldenDict 监听启动失败（不影响 API 服务）")
     try:
+        await review_scheduler.start()
+    except Exception:
+        log.exception("复习提醒调度器启动失败（不影响 API 服务）")
+    try:
         yield
     finally:
+        try:
+            await review_scheduler.stop()
+        except Exception:
+            log.exception("复习提醒调度器停止时出错")
         try:
             stop_embedded_watcher()
         except Exception:
@@ -50,6 +60,9 @@ app = FastAPI(
     },
     lifespan=lifespan,
 )
+
+# 复习提醒（艾宾浩斯主动复习）：REST 接口 + /review 复习页面
+app.include_router(review_router)
 
 
 # ── Request schemas ─────────────────────────────────────────────────
@@ -199,6 +212,9 @@ class SearchResponse(BaseModel):
                                     "更新生词": "PATCH /api/vocabulary/{word_id}",
                                     "删除生词": "DELETE /api/vocabulary/{word_id}",
                                     "复习生词": "POST /api/vocabulary/{word_id}/review",
+                                    "复习提醒状态": "GET /api/review/status",
+                                    "复习提醒配置": "GET /api/review/config",
+                                    "复习页面": "GET /review",
                                 },
                             },
                         }
@@ -221,6 +237,9 @@ async def root():
             "更新生词": "PATCH /api/vocabulary/{word_id}",
             "删除生词": "DELETE /api/vocabulary/{word_id}",
             "复习生词": "POST /api/vocabulary/{word_id}/review",
+            "复习提醒状态": "GET /api/review/status",
+            "复习提醒配置": "GET /api/review/config",
+            "复习页面": "GET /review",
         },
     }
 

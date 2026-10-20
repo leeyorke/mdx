@@ -53,6 +53,28 @@ uv run python -X utf8 -m app.goldendict
 详见 [docs/goldendict-watcher.md](docs/goldendict-watcher.md)。
 测试：`uv run python -X utf8 script/test_goldendict.py`
 
+## 复习提醒（艾宾浩斯主动复习）
+
+复习提醒整套逻辑从浏览器扩展 vibe-reading 搬到了后端：调度、状态、Windows
+系统通知、复习卡片与配置页面都由本服务提供（扩展侧只保留生词本与闪卡）。
+
+- **Windows 通知**：到点弹出系统通知，**点击直接用默认浏览器打开复习页面**
+  （`http://127.0.0.1:4080/review`），无需浏览器扩展在场；
+- **复习页面**：`/review` 一个页面搞定复习（记得 / 忘了、词典释义、朗读）和配置
+  （开关、每日配额、免打扰时段、LLM 例句等）；
+- **阶梯**：5 分钟 / 30 分钟 / 12 小时 / 1 天 / 2 天 / 4 天 / 7 天 / 15 天；
+  「记得」跨两级、「忘了」退一级；
+- **配额**：每天最多 8 条、每词每天最多 3 条，默认 23:00–08:00 免打扰；
+- **队列来源**：只有复习过（闪卡评过分）的生词才进队列。
+
+```bash
+# 打开复习页面（通知点击后也是这个地址）
+start http://127.0.0.1:4080/review
+```
+
+接口与实现细节见 [docs/review.md](docs/review.md)。
+测试：`uv run python -X utf8 script/test_review.py`
+
 ## 制作sqliteDB
 
 1. 安装 [mdict-utils](https://github.com/liuyug/mdict-utils)： `pip install git+https://github.com/liuyug/mdict-utils.git`

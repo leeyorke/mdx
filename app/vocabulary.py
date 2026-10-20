@@ -160,6 +160,25 @@ def list_words(
     return [dict(r) for r in rows], total
 
 
+def list_reviewed_words(*, limit: int = 100, offset: int = 0) -> list[dict]:
+    """查询至少复习过一次的生词（复习提醒队列的来源）。
+
+    按创建时间倒序返回，最新的生词优先。
+    """
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM vocabulary_words
+            WHERE last_reviewed_at IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+
+    return [dict(r) for r in rows]
+
+
 def update_word(word_id: str, updates: dict) -> Optional[dict]:
     """
     更新生词（仅允许修改 star / translation / note）
