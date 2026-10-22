@@ -13,10 +13,10 @@ uv run python -X utf8 -m uvicorn app.main:app --host 0.0.0.0 --port 4080
 
 已配置为**用户登录时自动启动**（隐藏后台运行，无需每次手动开）：
 
-- 安装：双击根目录 `install_scheduled_task.cmd`——创建计划任务 `MDX-GoldenDict-API`
+- 安装：双击根目录 `scheduled_task_install.cmd`——创建计划任务 `MDX-GoldenDict-API`
   并把服务拉起来；**非管理员运行时自动提权重跑**，成功退出码 `0`，全程日志在
   `data/install_task.log`（提权失败时脚本会停下显示原因，不会闪退）
-- 停止/卸载：双击根目录 `stop_scheduled_task.cmd`——停止 4080 服务并删除计划任务，
+- 停止/卸载：双击根目录 `scheduled_task_stop.cmd`——停止 4080 服务并删除计划任务，
   成功退出码 `0`；跑完 `netstat -ano | findstr 4080` 无 LISTENING 输出
 - 任务定义在 `script/mdx-task.xml`（登录时运行 wscript → `script/autostart.vbs` →
   `script/run_server.bat`，隐藏窗口、不限运行时长、电池模式照常启动）

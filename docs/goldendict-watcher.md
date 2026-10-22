@@ -24,8 +24,8 @@
 
 | 文件 | 作用 |
 |------|------|
-| `install_scheduled_task.cmd` | 安装：创建计划任务 `MDX-GoldenDict-API` 并启动 4080 服务；非管理员时自动 RunAs 重跑，成功退出码 `0` |
-| `stop_scheduled_task.cmd` | 卸载：停止 4080 服务并删除计划任务；成功退出码 `0`，跑完 netstat 无 LISTENING |
+| `scheduled_task_install.cmd` | 安装：创建计划任务 `MDX-GoldenDict-API` 并启动 4080 服务；非管理员时自动 RunAs 重跑，成功退出码 `0` |
+| `scheduled_task_stop.cmd` | 卸载：停止 4080 服务并删除计划任务；成功退出码 `0`，跑完 netstat 无 LISTENING |
 | `script/mdx-task.xml` | 任务定义：登录触发，`wscript → autostart.vbs`，不限时长、电池模式照常 |
 | `script/autostart.vbs` | 隐藏窗口启动器 |
 | `script/run_server.bat` | cd 到项目根，用 `.venv\Scripts\python.exe` 起 uvicorn（4080），日志追加到 `data\server.log` |
