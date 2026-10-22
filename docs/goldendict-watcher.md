@@ -24,7 +24,7 @@
 
 | 文件 | 作用 |
 |------|------|
-| `script/install_scheduled_task.cmd` | **主安装脚本**：创建计划任务 `MDX-GoldenDict-API`（双击运行；非管理员时自动提权重跑） |
+| `script/install_scheduled_task.cmd` | **主安装脚本**：创建计划任务 `MDX-GoldenDict-API`（双击运行；非管理员时自动提权重跑），末尾自动拉起服务并探测 4080；重跑它 = 重启服务（删任务会终止运行中的实例） |
 | `script/mdx-task.xml` | 任务定义：登录触发，`wscript → autostart.vbs`，不限时长、电池模式照常 |
 | `script/autostart.vbs` | 隐藏窗口启动器 |
 | `script/run_server.bat` | cd 到项目根，用 `.venv\Scripts\python.exe` 起 uvicorn（4080），日志追加到 `data\server.log` |

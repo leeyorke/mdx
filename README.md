@@ -17,6 +17,8 @@ uv run python -X utf8 -m uvicorn app.main:app --host 0.0.0.0 --port 4080
   安装——**双击即可**，脚本检测到非管理员会自动提权重跑；任务定义在 `script/mdx-task.xml`
   （登录时运行 wscript → `script/autostart.vbs` → `script/run_server.bat`，隐藏窗口、
   不限运行时长、电池模式照常启动）
+- 安装脚本末尾会自动拉起服务并探测 4080 端口；**重跑它 = 重启服务**
+  （删除任务会终止其正在运行的实例，所以最后一步负责重新拉起）
 - 卸载：管理员终端 `schtasks /Delete /TN "MDX-GoldenDict-API" /F`，或 taskschd.msc 里删除
 - 备用方式（没有管理员权限时）：启动文件夹方案，`pwsh script/install_autostart.ps1`
 - 停止服务：`pwsh script/stop_server.ps1`（只结束监听 4080 的进程）
