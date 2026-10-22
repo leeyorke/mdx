@@ -78,6 +78,29 @@ start http://127.0.0.1:4080/review
 接口与实现细节见 [docs/review.md](docs/review.md)。
 测试：`uv run python -X utf8 script/test_review.py`
 
+## 欧路（Eudic）生词本接入
+
+把欧路词典的生词本并进本地生词表，让扩展的生词本和闪卡能同时用两边的词。
+**代理逻辑在本服务这边**，扩展不碰欧路、也不持有 NIS token。
+
+- **合并展示**：欧路词以 `source='eudic'` 落进**同一张** `vocabulary_words`
+  表，所以分页/搜索/排序天然统一，复习提醒的队列也自动覆盖；
+- **双向同步**：闪卡评分回写欧路星级、删除回写欧路收藏；开启
+  `syncNewWords` 后划线收藏的词也同时进欧路；
+- **token 在后端**：从环境变量 `EUDIT_API_KEY` 读（设置页的备用 token 排第二），
+  扩展的配置文件里不会出现它。
+
+```bash
+# 手动触发一次同步（扩展的「立即同步」按钮走的是同一个接口）
+curl -X POST http://127.0.0.1:4080/api/eudic/sync
+
+# 验证连通性，并列出账号里的生词本
+curl -X POST http://127.0.0.1:4080/api/eudic/verify
+```
+
+接口与实现细节见 [docs/eudic.md](docs/eudic.md)。
+测试：`uv run python -X utf8 script/test_eudic.py`
+
 ## 制作sqliteDB
 
 1. 安装 [mdict-utils](https://github.com/liuyug/mdict-utils)： `pip install git+https://github.com/liuyug/mdict-utils.git`

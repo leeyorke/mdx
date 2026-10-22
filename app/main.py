@@ -8,15 +8,19 @@ from fastapi import FastAPI, HTTPException, Query, Path, Body
 from pydantic import BaseModel, Field
 
 from app.dictionary import query_word, search_words
+from app import eudic
+from app.eudic_api import router as eudic_router
 from app.goldendict import start_embedded_watcher, stop_embedded_watcher
 from app.review.api import router as review_router
 from app.review.scheduler import scheduler as review_scheduler
 from app.vocabulary import (
     add_word,
+    count_words_by_source,
     delete_word,
     get_word,
     list_words,
     review_word,
+    set_word_source,
     update_word,
 )
 
@@ -63,6 +67,9 @@ app = FastAPI(
 
 # 复习提醒（艾宾浩斯主动复习）：REST 接口 + /review 复习页面
 app.include_router(review_router)
+
+# 欧路生词本接入：配置、同步、写回
+app.include_router(eudic_router)
 
 
 # ── Request schemas ─────────────────────────────────────────────────
@@ -138,6 +145,23 @@ class UpdateVocabularyWordPayload(BaseModel):
     }
 
 
+class EudicSyncStatus(BaseModel):
+    """欧路侧的同步结果。
+
+    写操作（新增/改星级/删除）会把结果带回来：欧路那边失败时**本地已经
+    改成功了**，所以这里只报告，不回滚。
+    """
+
+    ok: bool = Field(description="是否成功同步到欧路")
+    error: Optional[str] = Field(None, description="失败原因")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [{"ok": False, "error": "token 无效或已过期"}]
+        }
+    }
+
+
 class VocabularyRecordResponse(BaseModel):
     id: str = Field(description="生词 ID")
     word: str = Field(description="单词")
@@ -153,12 +177,24 @@ class VocabularyRecordResponse(BaseModel):
     )
     review_count: int = Field(description="复习次数")
     note: Optional[str] = Field(None, description="备注")
+    source: str = Field(
+        "local", description="来源：local = 本地收藏，eudic = 欧路生词本"
+    )
+    phonetic: Optional[str] = Field(None, description="音标（欧路侧带过来的）")
 
     model_config = {"from_attributes": True}
 
 
 class AddVocabularyWordResponse(VocabularyRecordResponse):
-    pass
+    eudic_sync: Optional[EudicSyncStatus] = Field(
+        None, description="欧路侧同步结果（没涉及欧路时为 null）"
+    )
+
+
+class PatchVocabularyWordResponse(VocabularyRecordResponse):
+    eudic_sync: Optional[EudicSyncStatus] = Field(
+        None, description="欧路侧同步结果（没涉及欧路时为 null）"
+    )
 
 
 class VocabularyListResponse(BaseModel):
@@ -166,12 +202,19 @@ class VocabularyListResponse(BaseModel):
     total: int = Field(description="总记录数")
     limit: int = Field(description="每页数量")
     offset: int = Field(description="偏移量")
+    by_source: dict[str, int] = Field(
+        default_factory=dict,
+        description="各来源的生词数量（不受当前搜索/筛选影响）",
+    )
 
     model_config = {"from_attributes": True}
 
 
 class VocabularyMessageResponse(BaseModel):
     message: str = Field(description="消息文本")
+    eudic_sync: Optional[EudicSyncStatus] = Field(
+        None, description="欧路侧同步结果（没涉及欧路时为 null）"
+    )
 
 
 class WordEntryResponse(BaseModel):
@@ -426,7 +469,30 @@ async def create_vocabulary(
         target_language=payload.target_language,
         note=payload.note,
     )
-    return record
+
+    eudic_sync = None
+    if eudic.sync_new_words_enabled():
+        # 推欧路失败**不回滚**本地：本地这条已经收好了，回滚会让用户
+        # 以为收藏没成功，词却从列表里消失了。
+        try:
+            eudic.push_new_word(
+                record["word"],
+                int(record["star"]),
+                record.get("context_text") or "",
+            )
+            category_id = eudic.config_category_id()
+            record = set_word_source(
+                record["id"],
+                "eudic",
+                eudic.make_source_id(category_id, record["word"]),
+                category_id,
+            ) or record
+            eudic_sync = {"ok": True}
+        except (eudic.EudicError, ValueError) as exc:
+            log.warning("同步到欧路失败：%s", exc)
+            eudic_sync = {"ok": False, "error": str(exc)}
+
+    return {**record, "eudic_sync": eudic_sync}
 
 
 @app.get(
@@ -489,7 +555,7 @@ async def create_vocabulary(
 )
 async def list_vocabulary(
     limit: int = Query(
-        20, ge=1, le=100, description="返回数量", examples=[{"value": 20}]
+        20, ge=1, le=500, description="返回数量", examples=[{"value": 20}]
     ),
     offset: int = Query(0, ge=0, description="偏移量", examples=[{"value": 0}]),
     sortBy: str = Query(
@@ -505,6 +571,11 @@ async def list_vocabulary(
     search: Optional[str] = Query(
         None, description="按 word 模糊搜索", examples=[{"value": "hel"}]
     ),
+    source: Optional[str] = Query(
+        None,
+        description="按来源过滤: all | local | eudic（不传 = 全部）",
+        examples=[{"value": "all"}],
+    ),
 ):
     """分页查询生词本"""
     # 将前端驼峰字段名映射为 SQLite 字段名
@@ -517,8 +588,15 @@ async def list_vocabulary(
         sort_by=sort_by_db,
         sort_order=sortOrder,
         search=search,
+        source=source,
     )
-    return {"records": records, "total": total, "limit": limit, "offset": offset}
+    return {
+        "records": records,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "by_source": count_words_by_source(),
+    }
 
 
 @app.get(
@@ -579,7 +657,7 @@ async def get_vocabulary(
     summary="更新生词",
     description="更新生词的评分、翻译或笔记。至少需要提供一个更新字段。",
     tags=["Vocabulary"],
-    response_model=VocabularyRecordResponse,
+    response_model=PatchVocabularyWordResponse,
     responses={
         400: {
             "description": "未提供更新字段",
@@ -651,7 +729,18 @@ async def patch_vocabulary(
     record = update_word(word_id, updates)
     if record is None:
         raise HTTPException(status_code=404, detail="生词不存在")
-    return record
+
+    eudic_sync = None
+    if record.get("source") == "eudic" and "star" in updates:
+        try:
+            eudic.push_star(record["word"], int(updates["star"]))
+            eudic_sync = {"ok": True}
+        except eudic.EudicError as exc:
+            # 本地星级已经改好了，只是没同步过去——报告出来，不回滚。
+            log.warning("同步星级到欧路失败：%s", exc)
+            eudic_sync = {"ok": False, "error": str(exc)}
+
+    return {**record, "eudic_sync": eudic_sync}
 
 
 @app.delete(
@@ -688,9 +777,25 @@ async def remove_vocabulary(
     ),
 ):
     """删除生词"""
+    # 先取记录：要知道它是不是欧路来的，才知道要不要同步删除
+    existing = get_word(word_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="生词不存在")
+
     if not delete_word(word_id):
         raise HTTPException(status_code=404, detail="生词不存在")
-    return {"message": "删除成功"}
+
+    eudic_sync = None
+    if existing.get("source") == "eudic":
+        try:
+            eudic.push_delete(existing["word"])
+            eudic_sync = {"ok": True}
+        except eudic.EudicError as exc:
+            # 本地已经删掉了，欧路那边还留着——告诉调用方。
+            log.warning("同步删除到欧路失败：%s", exc)
+            eudic_sync = {"ok": False, "error": str(exc)}
+
+    return {"message": "删除成功", "eudic_sync": eudic_sync}
 
 
 @app.post(
