@@ -67,40 +67,28 @@ if "%FOUND%"=="0" echo     4080 is not running
 ping -n 3 127.0.0.1 >nul
 goto :eof
 
-rem ---------- verify the real end state ----------
+rem ---------- verify: wait until netstat is completely clean ----------
 :verify
+echo     waiting for old client sockets to clear (usually a few seconds)...
 set /a tries=0
 :wait_clear
 netstat -ano | findstr /c:":4080 " >nul 2>&1
 if errorlevel 1 goto all_clear
 ping -n 2 127.0.0.1 >nul
 set /a tries+=1
-if %tries% lss 10 goto wait_clear
-rem 10s later: distinguish "still listening" (fail) from client TIME_WAIT (ok)
+set /a m=%tries% %% 20
+if %m%==0 echo     ...still waiting (%tries%s)
+if %tries% lss 250 goto wait_clear
+rem 250s later: distinguish "still listening" (fail) from client TIME_WAIT (ok)
 netstat -ano | findstr /c:":4080 " | findstr /c:"LISTENING" >nul 2>&1
 if not errorlevel 1 goto still_listening
 echo [OK] Service stopped; nothing is LISTENING on 4080.
-echo     Leftover lines are old client-side TIME_WAIT entries (PID 0,
-echo     not the service); they clear on their own within ~4 minutes:
+echo     These leftover lines are old client-side TIME_WAIT entries
+echo     (PID 0, not the service) and did not clear within ~4 minutes:
 netstat -ano | findstr /c:":4080 "
-set /p ans=Wait here until they clear? [y/N]:
-if /i "%ans%"=="y" goto wait_timewait
 echo [%date% %time%] uninstall OK (client TIME_WAIT remnants only) >> "%LOG%"
 pause
 exit /b 0
-
-:wait_timewait
-set /a tries=0
-:wait_clear2
-netstat -ano | findstr /c:":4080 " >nul 2>&1
-if errorlevel 1 goto all_clear
-ping -n 3 127.0.0.1 >nul
-set /a tries+=1
-if %tries% lss 160 goto wait_clear2
-echo [!] Still not clear after ~4 minutes - please check manually.
-echo [%date% %time%] uninstall FAILED: 4080 lines persist >> "%LOG%"
-pause
-exit /b 1
 
 :all_clear
 schtasks /Query /TN "MDX-GoldenDict-API" >nul 2>&1
