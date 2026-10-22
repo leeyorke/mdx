@@ -24,21 +24,31 @@
 
 | 文件 | 作用 |
 |------|------|
-| `script/install_scheduled_task.cmd` | **主安装脚本**：创建计划任务 `MDX-GoldenDict-API`（双击运行；非管理员时自动提权重跑），末尾自动拉起服务并探测 4080；重跑它 = 重启服务（删任务会终止运行中的实例） |
+| `install_scheduled_task.cmd` | 安装：创建计划任务 `MDX-GoldenDict-API` 并启动 4080 服务；非管理员时自动 RunAs 重跑，成功退出码 `0` |
+| `stop_scheduled_task.cmd` | 卸载：停止 4080 服务并删除计划任务；成功退出码 `0`，跑完 netstat 无 LISTENING |
 | `script/mdx-task.xml` | 任务定义：登录触发，`wscript → autostart.vbs`，不限时长、电池模式照常 |
 | `script/autostart.vbs` | 隐藏窗口启动器 |
 | `script/run_server.bat` | cd 到项目根，用 `.venv\Scripts\python.exe` 起 uvicorn（4080），日志追加到 `data\server.log` |
 | `script/install_autostart.ps1` | 备用：无管理员权限时改用「启动文件夹」快捷方式 |
-| `script/stop_server.ps1` | 按 4080 端口结束服务进程 |
+| `script/stop_server.ps1` | 只停服务、不删任务（按 4080 端口结束进程） |
 
-- 注册计划任务需要**提权**（非提权进程会被拒 Access is denied，本机任务库经过加固），
-  安装脚本会自动 RunAs 重跑；已实测 任务 → wscript → vbs → 隐藏服务 全链路通过
+两个 .cmd 的共同设计（都是踩坑换来的）：
+
+- 非管理员 → `cmd.exe /c <自身> /elevated` + `Start-Process -Verb RunAs -Wait` 提权重跑
+  （直接对 .cmd 用 RunAs 不可靠）；**任何失败都 pause 不闪退**，并写日志
+  `data/install_task.log`；父窗口不信任子进程，自己重新验证最终状态（任务在不在、
+  端口通不通）再决定退出码
+- 提权彻底失败时，安装脚本提供无管理员备选（启动文件夹）；`schtasks` 的
+  SUCCESS/ERROR 输出全部进日志，方便事后复盘
 - `.bat` / `.cmd` 必须保持**纯 ASCII + CRLF**：cmd 按 OEM 代码页逐字节解析，
-  非 ASCII 字节混进 echo 行会吃掉命令名字符、LF 行尾会破坏括号块解析
-- `autostart.vbs` 同理保持纯 ASCII：WSH 按系统 ANSI 代码页读 .vbs，中文注释会编译失败
-- 自启用 `.venv` python 而非 `uv run`：避免开机时联网同步依赖导致启动失败；更新依赖后开发机手动 `uv sync`
-- 登出/重启后自动重新启动；端口 4080 被占用时新实例绑定失败即退出（日志可见），
-  叠加文件锁，不会出现双写
+  非 ASCII 字节混进 echo 行会吃掉命令名字符、LF 行尾会破坏括号块解析；
+  休眠用 `ping -n N 127.0.0.1`（`timeout` 在 stdin 重定向时报
+  "Input redirection is not supported"）
+- 杀服务进程不会产生服务端 TIME_WAIT（连接直接被 RST，父进程自行退出）；
+  `netstat` 里残留的 4080 TIME_WAIT 行是**客户端**自己的（PID 0），与服务无关，
+  最多 4 分钟自动消失——停止脚本会区分"仍在监听"（失败）和"客户端残留"（正常），
+  也可选等待残留自然消失
+- 注册计划任务需要**提权**（非提权进程会被拒 Access is denied，本机任务库经过加固）
 
 ## 监听的文件与格式
 

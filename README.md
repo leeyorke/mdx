@@ -13,20 +13,21 @@ uv run python -X utf8 -m uvicorn app.main:app --host 0.0.0.0 --port 4080
 
 已配置为**用户登录时自动启动**（隐藏后台运行，无需每次手动开）：
 
-- 主方式（本机已安装）：计划任务 `MDX-GoldenDict-API`，由 `script/install_scheduled_task.cmd`
-  安装——**双击即可**，脚本检测到非管理员会自动提权重跑；任务定义在 `script/mdx-task.xml`
-  （登录时运行 wscript → `script/autostart.vbs` → `script/run_server.bat`，隐藏窗口、
-  不限运行时长、电池模式照常启动）
-- 安装脚本末尾会自动拉起服务并探测 4080 端口；**重跑它 = 重启服务**
-  （删除任务会终止其正在运行的实例，所以最后一步负责重新拉起）
-- 卸载：管理员终端 `schtasks /Delete /TN "MDX-GoldenDict-API" /F`，或 taskschd.msc 里删除
-- 备用方式（没有管理员权限时）：启动文件夹方案，`pwsh script/install_autostart.ps1`
-- 停止服务：`pwsh script/stop_server.ps1`（只结束监听 4080 的进程）
+- 安装：双击根目录 `install_scheduled_task.cmd`——创建计划任务 `MDX-GoldenDict-API`
+  并把服务拉起来；**非管理员运行时自动提权重跑**，成功退出码 `0`，全程日志在
+  `data/install_task.log`（提权失败时脚本会停下显示原因，不会闪退）
+- 停止/卸载：双击根目录 `stop_scheduled_task.cmd`——停止 4080 服务并删除计划任务，
+  成功退出码 `0`；跑完 `netstat -ano | findstr 4080` 无 LISTENING 输出
+- 任务定义在 `script/mdx-task.xml`（登录时运行 wscript → `script/autostart.vbs` →
+  `script/run_server.bat`，隐藏窗口、不限运行时长、电池模式照常启动）
+- 备用方式（没有管理员权限时）：`pwsh script/install_autostart.ps1`（启动文件夹）
+- 停止服务（不删任务）：`pwsh script/stop_server.ps1`（只结束监听 4080 的进程）
 - 日志：`data/server.log`
 - 说明：自启用 `.venv` python 而非 `uv run`，避免开机时联网同步依赖导致启动失败；
   改了依赖后在开发机 `uv sync` 即可
 - 注意：`*.bat` / `*.cmd` 保持**纯 ASCII + CRLF**——cmd 按 OEM 代码页逐字节解析，
-  非 ASCII 字节混进 echo 行会把命令名吃掉
+  非 ASCII 字节混进 echo 行会把命令名吃掉；脚本内用 `ping` 而不是 `timeout` 休眠
+  （`timeout` 在 stdin 重定向时报错）
 
 ## GoldenDict 查词自动入生词本
 
