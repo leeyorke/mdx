@@ -1,23 +1,27 @@
 """复习提醒模块测试
 
-覆盖（对齐 vibe-reading 原来的 ``src/utils/review/__tests__``）：
+覆盖：
 
 1. 艾宾浩斯阶梯推进（auto / remembered / forgotten）
 2. 阶梯走完后的两种处置（stop / restart）
 3. 推送失败退避
-4. 到期词的挑选与排序
+4. 到期词的挑选与排序（此刻到期 / 今天到期 / 即将到期）
 5. 免打扰时段（跨零点、当天窗口、关闭、起止相同）
-6. 日历工具函数与「下次该唤醒」的计算
-7. 配置与队列的落库（临时库，不碰真实 user.db）
+6. 日历工具函数、「下次该唤醒」与「下次提醒」的计算
+7. 配置与队列的落库（临时库，不碰真实 user.db；含老库补列迁移）
 8. 队列同步（只收「复习过一次」的生词）
-9. 一轮调度：推送、每日配额、单词配额、免打扰推迟
-10. 评分（记得 / 忘了）与下一张卡片
-11. REST 接口与复习页面
+9. 一轮调度：每日一次批量提醒、每日配额、免打扰只挡通知、当天不重复提醒、
+   失败退避
+10. 复习会话：auto 受剩余额度限制、manual 不受限 + 提前复习补齐
+11. 评分（记得 / 忘了，带 next_word_id）与例句按需生成（含固定搭配的中文意思）
+12. LLM 请求头（OpenRouter 归属头）、代理环境变量与 NO_PROXY 坑、REST 接口与复习页面（no-cache + 例句预加载）
 
 运行: uv run python -X utf8 script/test_review.py
 """
 
+import json
 import os
+import sqlite3
 import sys
 import tempfile
 from datetime import datetime
@@ -34,7 +38,7 @@ import app.review.schedule as schedule  # noqa: E402
 import app.review.service as service  # noqa: E402
 import app.review.store as store  # noqa: E402
 import app.vocabulary as vocabulary  # noqa: E402
-from app.review.constants import SRS_INTERVALS_MINUTES  # noqa: E402
+from app.review.constants import REVIEW_PAGE_URL, SRS_INTERVALS_MINUTES  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -69,8 +73,10 @@ def make_entry(**overrides) -> dict:
         "star": 3,
         "stage": 0,
         "next_due_at": NOW,
+        "last_notified_at": None,
         "push_count": 0,
         "failure_count": 0,
+        "last_rated_at": None,
         "synced_at": NOW,
     }
     entry.update(overrides)
@@ -151,11 +157,20 @@ def test_backoff_and_interval() -> None:
     check("退避封顶（超大失败次数）", schedule.get_backoff_ms(50) == 30 * 60_000)
 
     check("间隔 0 = 5 分钟", schedule.get_interval_ms(0) == 5 * 60_000)
+    last = len(SRS_INTERVALS_MINUTES) - 1
+    check("阶梯共 9 级", last == 8, last)
     check(
-        "间隔 7 = 15 天",
-        schedule.get_interval_ms(7) == 15 * 24 * 60 * 60 * 1000,
+        "间隔 7 = 8 天",
+        schedule.get_interval_ms(7) == 8 * 24 * 60 * 60 * 1000,
     )
-    check("越界阶段夹到最后一级", schedule.get_interval_ms(99) == schedule.get_interval_ms(7))
+    check(
+        "最后一级 = 12 天",
+        schedule.get_interval_ms(last) == 12 * 24 * 60 * 60 * 1000,
+    )
+    check(
+        "越界阶段夹到最后一级",
+        schedule.get_interval_ms(99) == schedule.get_interval_ms(last),
+    )
 
 
 def test_pick_due_entries() -> None:
@@ -193,11 +208,73 @@ def test_pick_due_entries() -> None:
     check("返回的是队列原对象（改动可直接落库）", entries["a"]["next_due_at"] == 123)
 
 
+def test_session_pickers() -> None:
+    print("\n[5] 会话挑选（今天到期 / 即将到期 / 待评分）")
+
+    day_start = schedule.get_start_of_day_ms(NOW)
+    end_of_today = schedule.get_end_of_day_ms(NOW)
+
+    check("当天零点", day_start == int(datetime(2026, 3, 10).timestamp() * 1000))
+    check(
+        "当天结束是 23:59:59.999",
+        end_of_today == day_start + 24 * 60 * 60 * 1000 - 1,
+    )
+
+    entries = {
+        "now": make_entry(word_id="now", next_due_at=NOW - 1),
+        "deferred": make_entry(word_id="deferred", next_due_at=end_of_today),
+        "tomorrow": make_entry(word_id="tomorrow", next_due_at=end_of_today + 60_000),
+        "rated": make_entry(word_id="rated", next_due_at=NOW, last_rated_at=NOW),
+        "done": make_entry(word_id="done", next_due_at=NOW, graduated=True),
+    }
+
+    picked = [e["word_id"] for e in schedule.pick_due_by(entries, end_of_today, 10)]
+    check(
+        "今天到期包含被推迟到今天的词（不传 day_start 不过滤已复习）",
+        picked == ["now", "rated", "deferred"],
+        picked,
+    )
+
+    picked = [
+        e["word_id"]
+        for e in schedule.pick_due_by(
+            entries, end_of_today, 10, day_start_ms=day_start
+        )
+    ]
+    check("排除今天已复习的词", picked == ["now", "deferred"], picked)
+
+    picked = [
+        e["word_id"]
+        for e in schedule.pick_due_by(
+            entries, end_of_today, 10, day_start_ms=day_start, exclude_ids=["now"]
+        )
+    ]
+    check("exclude_ids 去重", picked == ["deferred"], picked)
+
+    picked = [
+        e["word_id"]
+        for e in schedule.pick_upcoming_entries(entries, NOW, 10)
+    ]
+    check("即将到期只含此刻还没到期的", picked == ["deferred", "tomorrow"], picked)
+
+    entries = {
+        "a": make_entry(word_id="a", pending_review=True, last_notified_at=NOW - 10),
+        "b": make_entry(word_id="b", pending_review=True, last_notified_at=NOW),
+        "c": make_entry(word_id="c"),
+    }
+    picked = [e["word_id"] for e in schedule.pick_pending_entries(entries)]
+    check("待评分按提醒时间排序", picked == ["a", "b"], picked)
+    check(
+        "pick_next_pending_entry 可排除当前词",
+        schedule.pick_next_pending_entry(entries, "a")["word_id"] == "b",
+    )
+
+
 # ── 2. 免打扰时段 ─────────────────────────────────────────────────────
 
 
 def test_quiet_hours() -> None:
-    print("\n[5] 免打扰时段")
+    print("\n[6] 免打扰时段")
 
     check("解析 00:00", schedule.parse_time_to_minutes("00:00") == 0)
     check("解析 08:30", schedule.parse_time_to_minutes("08:30") == 510)
@@ -257,7 +334,7 @@ def test_quiet_hours() -> None:
 
 
 def test_calendar_helpers() -> None:
-    print("\n[6] 日历工具")
+    print("\n[7] 日历工具")
 
     check(
         "按本地日历日编号",
@@ -271,8 +348,8 @@ def test_calendar_helpers() -> None:
     check("次日本地零点", nxt.day == 11 and nxt.hour == 0 and nxt.minute == 0)
 
 
-def test_next_wakeup() -> None:
-    print("\n[7] 下次该唤醒的时刻")
+def test_next_times() -> None:
+    print("\n[8] 唤醒点与下次提醒的时刻")
 
     config = {"enabled": True, "quiet_hours": QUIET_OFF_MIDNIGHT}
 
@@ -298,12 +375,57 @@ def test_next_wakeup() -> None:
     woken = datetime.fromtimestamp(when / 1000)
     check("落在免打扰时段的唤醒点被推到窗口结束", woken.day == 11 and woken.hour == 8)
 
+    # ── 下次提醒（get_next_notify_at） ──────────────────────────────
+    check(
+        "提醒关着 → 永远不响",
+        schedule.get_next_notify_at({"a": make_entry()}, {"enabled": False}, {}, NOW)
+        is None,
+    )
+    check(
+        "空队列 → 不响",
+        schedule.get_next_notify_at({}, config, {}, NOW) is None,
+    )
+    check(
+        "全部毕业 → 不响",
+        schedule.get_next_notify_at(graduated, config, {}, NOW) is None,
+    )
+
+    # 今天没响过、此刻就到期 → 到期即响（至少 30 秒后）
+    when = schedule.get_next_notify_at(overdue, config, {}, NOW)
+    check("今天没响过：到期即响", when == NOW + 30_000, when - NOW)
+
+    # 今天已经响过 → 一天只一次，最早明天零点
+    when = schedule.get_next_notify_at(
+        overdue, config, {"2026-03-10": {"total": 3}}, NOW
+    )
+    expected = int(datetime(2026, 3, 11).timestamp() * 1000)
+    check("今天响过了：顺延到明天零点", when == expected, when)
+
+    # 明天零点落在免打扰时段 → 推到窗口结束（次日 8:00）
+    when = schedule.get_next_notify_at(
+        overdue, {**config, "quiet_hours": QUIET_NIGHT}, {"2026-03-10": {"total": 3}}, NOW
+    )
+    expected = int(datetime(2026, 3, 11, 8, 0).timestamp() * 1000)
+    check("顺延后落在免打扰 → 推到窗口结束", when == expected, when)
+
+    # 截图实景：配额用完后词被推迟到今天 23:59:59 + 今天已响过 22 次
+    # → 那个 23:59 只是占位值，真正下次提醒是明天 08:00
+    deferred = {"a": make_entry(word_id="a", next_due_at=schedule.get_end_of_day_ms(NOW))}
+    when = schedule.get_next_notify_at(
+        deferred,
+        {**config, "quiet_hours": QUIET_NIGHT},
+        {"2026-03-10": {"total": 22}},
+        NOW,
+    )
+    expected = int(datetime(2026, 3, 11, 8, 0).timestamp() * 1000)
+    check("推迟到 23:59 不会真响，下次是明天 08:00", when == expected, when)
+
 
 # ── 3. 存储层 ─────────────────────────────────────────────────────────
 
 
 def test_store_roundtrip() -> None:
-    print("\n[8] 配置与队列落库")
+    print("\n[9] 配置与队列落库")
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "review.db"
@@ -313,8 +435,11 @@ def test_store_roundtrip() -> None:
                 "默认配置齐全",
                 config["enabled"] is False
                 and config["max_per_day"] == 8
-                and config["max_per_word_per_day"] == 3
                 and config["quiet_hours"]["start"] == "23:00",
+            )
+            check(
+                "默认配置不再有每词每日上限",
+                "max_per_word_per_day" not in config,
             )
 
             saved = store.save_config({"enabled": True, "max_per_day": 3})
@@ -329,8 +454,12 @@ def test_store_roundtrip() -> None:
             entry = make_entry(
                 word_id="w1",
                 next_due_at=NOW,
-                last_collocations=["a", "b"],
+                last_collocations=[
+                    {"text": "reach a verdict", "chinese": "作出裁决"},
+                    {"text": "final verdict", "chinese": "最终裁决"},
+                ],
                 pending_review=True,
+                last_rated_at=NOW - 1000,
             )
             store.upsert_schedule_entries([entry])
             loaded = store.get_schedule_entry("w1")
@@ -339,7 +468,24 @@ def test_store_roundtrip() -> None:
                 loaded is not None
                 and loaded["word"] == "ephemeral"
                 and loaded["pending_review"] is True
-                and loaded["last_collocations"] == ["a", "b"],
+                and loaded["last_collocations"]
+                == [
+                    {"text": "reach a verdict", "chinese": "作出裁决"},
+                    {"text": "final verdict", "chinese": "最终裁决"},
+                ],
+            )
+            check("最近评分时间能读写", loaded["last_rated_at"] == NOW - 1000)
+
+            # 老库里搭配是纯字符串：读出来补齐成统一形状（意思留空）
+            store.upsert_schedule_entries(
+                [make_entry(word_id="legacy", next_due_at=NOW, last_collocations=["a", "b"])]
+            )
+            legacy = store.get_schedule_entry("legacy")
+            check(
+                "老库的纯字符串搭配读成统一形状",
+                legacy["last_collocations"]
+                == [{"text": "a", "chinese": ""}, {"text": "b", "chinese": ""}],
+                legacy["last_collocations"],
             )
 
             store.save_stats({"2026-03-10": {"total": 3, "per_word": {"w1": 1}}})
@@ -364,6 +510,46 @@ def test_store_roundtrip() -> None:
             check("清空队列生效", store.load_schedule() == {})
 
 
+def test_store_migration() -> None:
+    print("\n[10] 老库补列迁移")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        # 先按「没有 last_rated_at 列」的老结构建表并塞一行
+        old_sql = store._CREATE_SQL.replace(
+            "    -- 最近一次评分（复习）的时间，用来算「今天复习过了没有」\n"
+            "    last_rated_at       INTEGER,\n",
+            "",
+        )
+        conn = sqlite3.connect(db_path)
+        conn.executescript(old_sql)
+        conn.execute(
+            """
+            INSERT INTO review_schedule (word_id, word, translation, stage,
+                next_due_at, synced_at)
+            VALUES ('old1', 'ephemeral', 'adj. 短暂的', 0, ?, ?)
+            """,
+            (NOW, NOW),
+        )
+        conn.commit()
+        conn.close()
+
+        with mock.patch.object(store, "DB_FILE", db_path):
+            loaded = store.load_schedule()
+            check("老库能正常读取", "old1" in loaded, list(loaded))
+            check(
+                "老库自动补上 last_rated_at（为 None）",
+                loaded["old1"]["last_rated_at"] is None,
+            )
+            store.upsert_schedule_entries(
+                [make_entry(word_id="old1", last_rated_at=NOW)]
+            )
+            check(
+                "补列后可正常写入",
+                store.get_schedule_entry("old1")["last_rated_at"] == NOW,
+            )
+
+
 # ── 4. 业务层 ─────────────────────────────────────────────────────────
 
 
@@ -375,6 +561,13 @@ def _make_vocabulary(db_path: Path) -> None:
     vocabulary.review_word(reviewed["id"])
 
 
+def _add_reviewed(word: str, translation: str) -> str:
+    """再加一个「复习过一次」的生词，返回它的 ID。"""
+    record = vocabulary.add_word(word, translation)
+    vocabulary.review_word(record["id"])
+    return record["id"]
+
+
 def _make_due(now: int) -> None:
     """把队列里的词都标记成「此刻到期」。"""
     entries = list(store.load_schedule().values())
@@ -383,8 +576,16 @@ def _make_due(now: int) -> None:
     store.upsert_schedule_entries(entries)
 
 
+def _due_ids() -> set:
+    return {
+        entry["word_id"]
+        for entry in store.load_schedule().values()
+        if int(entry.get("next_due_at", 0)) <= NOW
+    }
+
+
 def test_sync_queue() -> None:
-    print("\n[9] 队列同步")
+    print("\n[11] 队列同步")
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "review.db"
@@ -401,6 +602,7 @@ def test_sync_queue() -> None:
                 "新词条从阶梯 0 开始、立刻到期",
                 entry["stage"] == 0 and entry["push_count"] == 0,
             )
+            check("新词条没有评分记录", entry["last_rated_at"] is None)
 
             # 再同步一次：不该重复添加
             again = service.sync_review_queue()
@@ -408,12 +610,14 @@ def test_sync_queue() -> None:
 
 
 def test_run_tick() -> None:
-    print("\n[10] 一轮调度")
+    print("\n[12] 一轮调度（每日一次批量提醒）")
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "review.db"
         with mock.patch.object(store, "DB_FILE", db_path):
             _make_vocabulary(db_path)
+            _add_reviewed("serendipity", "n. 意外发现珍奇事物的运气")
+            _add_reviewed("luminate", "v. 发亮")
             service.sync_review_queue()
             _make_due(NOW)
             service.update_config(
@@ -423,65 +627,109 @@ def test_run_tick() -> None:
                 }
             )
 
-            pushed: list[str] = []
+            calls: list[dict] = []
 
-            def fake_notify(word, translation, sentence, launch_url):
-                pushed.append(word)
+            def fake_notify(count, words, launch_url):
+                calls.append(
+                    {"count": count, "words": list(words), "launch_url": launch_url}
+                )
                 return True
 
-            with mock.patch.object(service, "send_review_notification", fake_notify):
+            with mock.patch.object(service, "send_batch_notification", fake_notify):
                 outcome = service.run_review_tick(now=NOW)
-                check("到点的词被推送", outcome["pushed"] == 1, outcome)
-                check("推送记录正确", pushed == ["monetization"], pushed)
+                check("一批只发一条通知", outcome["pushed"] == 1, outcome)
+                check("通知覆盖全部到期词", outcome["words"] == 3, outcome)
+                check("只调用一次通知", len(calls) == 1, calls)
+                check(
+                    "通知带上班别与地址",
+                    calls[0]["count"] == 3
+                    and sorted(calls[0]["words"]) == ["luminate", "monetization", "serendipity"]
+                    and calls[0]["launch_url"] == REVIEW_PAGE_URL,
+                    calls,
+                )
 
-                entry = next(iter(store.load_schedule().values()))
+                entries = list(store.load_schedule().values())
                 check(
                     "推送后阶梯前进、标记待评分",
-                    entry["stage"] == 1
-                    and entry["push_count"] == 1
-                    and entry["pending_review"] is True,
+                    all(
+                        e["stage"] == 1
+                        and e["push_count"] == 1
+                        and e["pending_review"] is True
+                        and e["last_notified_at"] == NOW
+                        for e in entries
+                    ),
+                    entries,
+                )
+                check(
+                    "统计记下这批词数",
+                    store.load_stats().get("2026-03-10", {}).get("total") == 3,
                 )
 
-                # 免打扰时段：整队推迟
+                # 免打扰时段：只挡通知，不改到期时间
                 _make_due(NOW)
                 service.update_config(
-                    {
-                        "quiet_hours": {"enabled": True, "start": "00:00", "end": "23:59"}
-                    }
+                    {"quiet_hours": {"enabled": True, "start": "00:00", "end": "23:59"}}
                 )
+                before = {e["word_id"]: e["next_due_at"] for e in store.load_schedule().values()}
                 outcome = service.run_review_tick(now=NOW)
+                after = {e["word_id"]: e["next_due_at"] for e in store.load_schedule().values()}
                 check(
-                    "免打扰时段内推迟且不推送",
+                    "免打扰时段内不推送",
                     outcome["pushed"] == 0
                     and outcome["stopped_because"] == "quietHours",
                     outcome,
                 )
+                check("免打扰不改词的到期时间", before == after)
+                check("免打扰时段不再发通知", len(calls) == 1, calls)
 
-                # 每日配额
-                _make_due(NOW)
+                # 当天已提醒过：不再发第二条，剩余到期词推迟到今天结束
                 service.update_config(
-                    {
-                        "quiet_hours": {"enabled": False, "start": "23:00", "end": "08:00"},
-                        "max_per_day": 1,
-                    }
+                    {"quiet_hours": {"enabled": False, "start": "23:00", "end": "08:00"}}
                 )
+                _make_due(NOW)
+                end_of_today = schedule.get_end_of_day_ms(NOW)
                 outcome = service.run_review_tick(now=NOW)
                 check(
-                    "超出每日配额时推迟到明天",
+                    "当天不重复提醒",
+                    outcome["pushed"] == 0
+                    and outcome["stopped_because"] == "alreadyNotified",
+                    outcome,
+                )
+                check("没有第二条通知", len(calls) == 1, calls)
+                check(
+                    "剩余词推迟到今天结束（仍算今天到期）",
+                    all(
+                        e["next_due_at"] == end_of_today
+                        for e in store.load_schedule().values()
+                    ),
+                )
+
+                # 每日配额：一批只推 remaining 个，超额推迟到今天结束
+                #（清空队列后重新同步即可，不重复加词）
+                store.clear_schedule()
+                store.save_stats({})
+                service.sync_review_queue()
+                _make_due(NOW)
+                service.update_config({"max_per_day": 1})
+                calls.clear()
+                outcome = service.run_review_tick(now=NOW)
+                check("配额内一批推完", outcome["pushed"] == 1 and outcome["words"] == 1, outcome)
+                check("超额词被推迟", outcome["deferred"] == 2, outcome)
+                deferred = [
+                    e for e in store.load_schedule().values()
+                    if e["next_due_at"] == end_of_today
+                ]
+                check("推迟到今天结束", len(deferred) == 2, deferred)
+
+                # 额度用完：立刻再跑一轮就是 dailyCap，整队推迟且不推送
+                _make_due(NOW)
+                outcome = service.run_review_tick(now=NOW)
+                check(
+                    "额度用完后整队推迟且不推送",
                     outcome["pushed"] == 0 and outcome["stopped_because"] == "dailyCap",
                     outcome,
                 )
-
-                # 单词配额
-                _make_due(NOW)
-                service.update_config({"max_per_day": 8, "max_per_word_per_day": 1})
-                outcome = service.run_review_tick(now=NOW)
-                check(
-                    "超出单词配额时推迟到明天",
-                    outcome["pushed"] == 0
-                    and outcome["stopped_because"] == "perWordCap",
-                    outcome,
-                )
+                check("仍然只有一条通知", len(calls) == 1, calls)
 
                 # 关闭功能
                 service.update_config({"enabled": False})
@@ -493,97 +741,589 @@ def test_run_tick() -> None:
                 )
 
                 # 推送失败要退避，而不是吃掉阶梯位置
+                service.update_config({"enabled": True, "max_per_day": 8})
+                store.save_stats({})
                 _make_due(NOW)
-                service.update_config({"enabled": True, "max_per_word_per_day": 3})
+                stages_before = {
+                    e["word_id"]: e["stage"] for e in store.load_schedule().values()
+                }
 
-                def failing_notify(word, translation, sentence, launch_url):
+                def failing_notify(count, words, launch_url):
                     raise RuntimeError("通知发送失败")
 
                 with mock.patch.object(
-                    service, "send_review_notification", failing_notify
+                    service, "send_batch_notification", failing_notify
                 ):
-                    service.run_review_tick(now=NOW)
-
-                entry = next(iter(store.load_schedule().values()))
+                    outcome = service.run_review_tick(now=NOW)
                 check(
-                    "推送失败时阶梯不动、改为退避",
-                    entry["stage"] == 1
-                    and entry["failure_count"] == 1
-                    and entry["next_due_at"] > NOW,
-                    entry,
+                    "整批失败计数",
+                    outcome["failed"] == 3 and outcome["pushed"] == 0,
+                    outcome,
+                )
+                entries = {e["word_id"]: e for e in store.load_schedule().values()}
+                check(
+                    "失败时阶梯不动、改为退避",
+                    all(
+                        entries[wid]["stage"] == stage
+                        and entries[wid]["failure_count"] == 1
+                        and entries[wid]["next_due_at"] > NOW
+                        for wid, stage in stages_before.items()
+                    ),
+                    entries,
+                )
+                check(
+                    "失败不计入当天额度",
+                    store.load_stats().get("2026-03-10", {}).get("total", 0) == 0,
+                )
+
+                # 没有到期的词
+                store.clear_schedule()
+                service.sync_review_queue()
+                entries = list(store.load_schedule().values())
+                for entry in entries:
+                    entry["next_due_at"] = NOW + 60 * 60 * 1000
+                store.upsert_schedule_entries(entries)
+                with mock.patch.object(
+                    service, "send_batch_notification", lambda *a, **k: True
+                ):
+                    outcome = service.run_review_tick(now=NOW)
+                check(
+                    "没有到期的词",
+                    outcome["pushed"] == 0
+                    and outcome["stopped_because"] == "nothingDue",
+                    outcome,
                 )
 
 
-def test_rate_and_card() -> None:
-    print("\n[11] 评分与卡片")
+def _three_due_words() -> dict:
+    """三个今天到期的词（monetization / serendipity / luminate）→ {word_id: word}。"""
+    return {e["word_id"]: e["word"] for e in store.load_schedule().values()}
 
+
+def test_session() -> None:
+    print("\n[13] 复习会话")
+
+    # ── 场景一：auto 会话 = 待评分 + 今天到期，评分后即时变少 ──────────
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            _add_reviewed("serendipity", "n. 意外发现珍奇事物的运气")
+            _add_reviewed("luminate", "v. 发亮")
+            service.sync_review_queue()
+            _make_due(NOW)
+            service.update_config(
+                {
+                    "enabled": True,
+                    "max_per_day": 8,
+                    "quiet_hours": {"enabled": False, "start": "23:00", "end": "08:00"},
+                }
+            )
+
+            with mock.patch.object(
+                service, "send_batch_notification", lambda *a, **k: True
+            ):
+                service.run_review_tick(now=NOW)
+
+            ids = _three_due_words()
+            monetization = next(k for k, v in ids.items() if v == "monetization")
+
+            session = service.build_session("auto", now=NOW)
+            check("auto 会话包含全部待评分词", len(session["words"]) == 3, session)
+            check("auto 会话带第一张卡", session["first_card"]["word"] in ids.values())
+            check("auto 会话是 ready", session["state"] == "ready")
+
+            service.rate_word(monetization, "remembered")
+            session = service.build_session("auto", now=NOW)
+            check("评分后 auto 会话排除该词", len(session["words"]) == 2, session)
+            check("今日已复习计数", session["today"]["rated"] == 1, session["today"])
+
+            # 今天复习过的词不再进 auto 会话（即便再次到期）
+            _make_due(NOW)
+            session = service.build_session("auto", now=NOW)
+            check(
+                "今天已复习的词不进 auto 会话",
+                monetization not in {w["word_id"] for w in session["words"]},
+                session,
+            )
+
+            # manual：同样不受免打扰影响，把今天到期的词全收
+            session = service.build_session("manual", now=NOW)
+            check(
+                "manual 会话不受限制",
+                len(session["words"]) == 2,
+                session,
+            )
+
+    # ── 场景二：auto 受剩余额度限制，manual 不受 ──────────────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            _add_reviewed("serendipity", "n. 意外发现珍奇事物的运气")
+            _add_reviewed("luminate", "v. 发亮")
+            service.sync_review_queue()
+            _make_due(NOW)
+            service.update_config(
+                {
+                    "enabled": True,
+                    "max_per_day": 8,
+                    "quiet_hours": {"enabled": False, "start": "23:00", "end": "08:00"},
+                }
+            )
+            # 今天已经提醒过 6 个（只剩 2 个额度），且都没有评分
+            store.save_stats({"2026-03-10": {"total": 6, "per_word": {}}})
+
+            auto = service.build_session("auto", now=NOW)
+            check(
+                "auto 会话受剩余额度限制（8 - 6 = 2）",
+                len(auto["words"]) == 2 and auto["today"]["remaining"] == 2,
+                auto,
+            )
+            manual = service.build_session("manual", now=NOW)
+            check(
+                "manual 会话不受额度限制",
+                len(manual["words"]) == 3,
+                manual,
+            )
+            check(
+                "manual 里的词都不是提前复习",
+                all(not w["early"] for w in manual["words"]),
+            )
+
+    # ── 场景三：今天没有到期词时，manual 用即将到期的词补齐 ────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            _add_reviewed("serendipity", "n. 意外发现珍奇事物的运气")
+            _add_reviewed("luminate", "v. 发亮")
+            service.sync_review_queue()
+            entries = list(store.load_schedule().values())
+            for entry in entries:
+                entry["next_due_at"] = NOW + 24 * 60 * 60 * 1000  # 明天才到期
+            store.upsert_schedule_entries(entries)
+
+            auto = service.build_session("auto", now=NOW)
+            check(
+                "没有到期词时 auto 为空",
+                auto["state"] == "empty" and auto["empty_reason"] == "nothingDue",
+                auto,
+            )
+            manual = service.build_session("manual", now=NOW)
+            check(
+                "manual 用即将到期的词补齐",
+                len(manual["words"]) == 3 and manual["state"] == "ready",
+                manual,
+            )
+            check(
+                "补齐的词打上提前复习标记",
+                all(w["early"] for w in manual["words"]),
+                manual,
+            )
+
+    # ── 场景四：两种空态 ──────────────────────────────────────────────
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "review.db"
         with mock.patch.object(store, "DB_FILE", db_path):
             _make_vocabulary(db_path)
             service.sync_review_queue()
+            store.clear_schedule()
+            session = service.build_session("manual", now=NOW)
+            check("空队列 → noWords", session["empty_reason"] == "noWords", session)
+
+            service.sync_review_queue()
+            entries = list(store.load_schedule().values())
+            for entry in entries:
+                entry["graduated"] = True
+            store.upsert_schedule_entries(entries)
+            session = service.build_session("manual", now=NOW)
+            check(
+                "全部毕业 → allGraduated",
+                session["empty_reason"] == "allGraduated",
+                session,
+            )
+
+
+def test_rate_and_card() -> None:
+    print("\n[14] 评分与卡片")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            _add_reviewed("serendipity", "n. 意外发现珍奇事物的运气")
+            service.sync_review_queue()
             _make_due(NOW)
             service.update_config({"enabled": True})
 
-            word_id = next(iter(store.load_schedule().values()))["word_id"]
+            ids = {e["word_id"]: e["word"] for e in store.load_schedule().values()}
+            monetization = next(k for k, v in ids.items() if v == "monetization")
+            serendipity = next(k for k, v in ids.items() if v == "serendipity")
 
-            card = service.get_card(word_id)
+            card = service.get_card(monetization)
             check("能取到卡片", card is not None and card["word"] == "monetization")
             check("卡片带上阶梯信息", card["total_stages"] == len(SRS_INTERVALS_MINUTES))
 
             with mock.patch.object(
-                service, "send_review_notification", lambda *a, **k: True
+                service, "send_batch_notification", lambda *a, **k: True
             ):
                 service.run_review_tick(now=NOW)
 
             card = service.get_card()
             check("推送后能取到待评分卡片", card is not None)
 
-            next_card = service.rate_word(word_id, "remembered")
-            check("评分后返回下一张卡片（没有则为空）", next_card is None)
-
-            entry = store.get_schedule_entry(word_id)
+            # 带 next_word_id：一次往返拿到下一张
+            next_card = service.rate_word(monetization, "remembered", serendipity)
             check(
-                "记得时跨一级、清除待评分",
-                entry["stage"] == 3 and entry["pending_review"] is False,
+                "评分并返回指定的下一张卡片",
+                next_card is not None and next_card["word_id"] == serendipity,
+                next_card,
+            )
+
+            entry = store.get_schedule_entry(monetization)
+            check(
+                "记得时跨一级、清除待评分、记下评分时间",
+                entry["stage"] == 3
+                and entry["pending_review"] is False
+                and entry["last_rated_at"] is not None,
                 entry,
             )
 
-            service.rate_word(word_id, "forgotten")
-            entry = store.get_schedule_entry(word_id)
+            service.rate_word(monetization, "forgotten")
+            entry = store.get_schedule_entry(monetization)
             check("忘了时退一级", entry["stage"] == 2, entry)
+
+            # 不存在的词 / 非法评分
+            check("给不存在的词评分返回 None", service.rate_word("nope", "remembered") is None)
+            try:
+                service.rate_word(monetization, "wrong")
+                check("非法评分被拒绝", False)
+            except ValueError:
+                check("非法评分被拒绝", True)
+
+
+def test_refresh_example() -> None:
+    print("\n[15] 按需生成例句")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            service.sync_review_queue()
+            ids = {e["word_id"]: e["word"] for e in store.load_schedule().values()}
+            monetization = next(k for k, v in ids.items() if v == "monetization")
+
+            result = service.refresh_example(monetization)
+            check("能生成例句", result is not None, result)
+            check("没有 LLM 时回落上下文/bare", result["source"] in ("context", "bare"))
+            entry = store.get_schedule_entry(monetization)
+            check(
+                "例句被缓存到词条",
+                (entry["last_example"] or "") == result["example"],
+                (entry["last_example"], result["example"]),
+            )
+
+            check("不存在的词返回 None", service.refresh_example("nope") is None)
+
+
+def test_collocation_meaning() -> None:
+    print("\n[15b] 固定搭配的中文意思")
+
+    from app.review.constants import EXAMPLE_COLLOCATION_LIMIT
+    from app.review.example import build_example, normalize_collocations
+
+    check(
+        "新形状：搭配带中文意思",
+        normalize_collocations([{"text": "reach a verdict", "chinese": "作出裁决"}])
+        == [{"text": "reach a verdict", "chinese": "作出裁决"}],
+    )
+    check(
+        "老形状：纯字符串意思留空",
+        normalize_collocations(["jury verdict"])
+        == [{"text": "jury verdict", "chinese": ""}],
+    )
+    check(
+        "缺 chinese 键也留空",
+        normalize_collocations([{"text": "verdict on"}])
+        == [{"text": "verdict on", "chinese": ""}],
+    )
+    check("空搭配被丢掉", normalize_collocations(["", "  ", None]) == [])
+    check(
+        "超过上限按上限截断",
+        len(normalize_collocations([f"c{i}" for i in range(8)]))
+        == EXAMPLE_COLLOCATION_LIMIT,
+    )
+    check("非列表输入返回空", normalize_collocations("nope") == [])
+
+    # 端到端：LLM 输出带中文意思的搭配，一路带进接口返回值并落库
+    config = {
+        "generate_example": True,
+        "llm": {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-x",
+            "model": "m",
+        },
+    }
+    entry = {
+        "word": "verdict",
+        "translation": "裁决",
+        "context_text": "",
+        "push_count": 1,
+    }
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "sentence": "The jury reached a verdict.",
+                            "sentence_chinese": "陪审团作出了裁决。",
+                            "collocations": [
+                                {"text": "reach a verdict", "chinese": "作出裁决"},
+                                {"text": "final verdict", "chinese": "最终裁决"},
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                }
+            }
+        ]
+    }
+    with mock.patch("app.review.example.httpx.Client") as client_cls:
+        fake_client = client_cls.return_value.__enter__.return_value
+        fake_client.post.return_value.json.return_value = payload
+        result = build_example(entry, config)
+    check(
+        "build_example 返回带意思的搭配",
+        result["collocations"]
+        == [
+            {"text": "reach a verdict", "chinese": "作出裁决"},
+            {"text": "final verdict", "chinese": "最终裁决"},
+        ],
+        result,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            store.save_config({"llm": config["llm"]})
+            service.sync_review_queue()
+            ids = {e["word_id"]: e["word"] for e in store.load_schedule().values()}
+            word_id = next(k for k, v in ids.items() if v == "monetization")
+
+            with mock.patch("app.review.example.httpx.Client") as client_cls:
+                fake_client = client_cls.return_value.__enter__.return_value
+                fake_client.post.return_value.json.return_value = payload
+                refreshed = service.refresh_example(word_id)
+            check(
+                "按需生成带回意思的搭配",
+                refreshed["collocations"][0]
+                == {"text": "reach a verdict", "chinese": "作出裁决"},
+                refreshed,
+            )
+            cached = store.get_schedule_entry(word_id)
+            check(
+                "搭配缓存进词条",
+                cached["last_collocations"][0]["chinese"] == "作出裁决",
+                cached["last_collocations"],
+            )
 
 
 def test_open_url() -> None:
-    print("\n[12] 通知点击地址")
+    print("\n[16] 通知点击地址（固定，不再可配置）")
 
-    config = {"open_url_template": "http://127.0.0.1:4080/review?word={word_id}"}
+    from app.review.constants import REVIEW_PAGE_URL
+
     check(
-        "带生词 ID",
-        service.build_open_url(config, "abc-123")
-        == "http://127.0.0.1:4080/review?word=abc-123",
+        "通知固定打开复习会话页",
+        REVIEW_PAGE_URL == "http://127.0.0.1:4080/review",
+        REVIEW_PAGE_URL,
     )
     check(
-        "不带生词 ID 时去掉空参数",
-        service.build_open_url(config, None) == "http://127.0.0.1:4080/review",
-        service.build_open_url(config, None),
+        "build_open_url 已删除",
+        not hasattr(service, "build_open_url"),
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            # 老配置里的 open_url_template / page_base 读出来时被清掉
+            store.save_config(
+                {
+                    "open_url_template": "https://old.test/{word_id}",
+                    "page_base": "https://old.test",
+                    "max_per_day": 6,
+                }
+            )
+            cfg = store.load_config()
+            check("老配置的 open_url_template 被清理", "open_url_template" not in cfg, cfg)
+            check("老配置的 page_base 被清理", "page_base" not in cfg, cfg)
+            check("其他配置不受影响", cfg["max_per_day"] == 6)
+
+
+def test_batch_notification_text() -> None:
+    print("\n[17] 批量通知文案")
+
+    from app.review.notifier import build_batch_body, build_batch_title
+
+    check("标题报数", build_batch_title(8) == "今天有 8 个单词要复习")
+    check("标题单数也通顺", build_batch_title(1) == "今天有 1 个单词要复习")
+    check(
+        "正文预览前几个词",
+        build_batch_body(["a", "b", "c", "d"]) == "a、b、c 等 1 个，点击开始复习",
+        build_batch_body(["a", "b", "c", "d"]),
     )
     check(
-        "自定义模板",
-        service.build_open_url({"open_url_template": "https://x.test/{word_id}"}, "w1")
-        == "https://x.test/w1",
+        "词少时全部列出",
+        build_batch_body(["a", "b"]) == "a、b，点击开始复习",
     )
+    check("没有词也有引导", build_batch_body([]) == "点击开始复习")
+
+
+def test_llm_headers() -> None:
+    print("\n[18] LLM 请求头")
+
+    from app.review.example import _llm_headers
+
+    or_headers = _llm_headers("sk-x", "https://openrouter.ai/api/v1")
+    check(
+        "OpenRouter 带归属头",
+        or_headers["HTTP-Referer"] == "https://pi.dev"
+        and or_headers["X-Title"] == "pi",
+        or_headers,
+    )
+    check("OpenRouter 仍带鉴权", or_headers["Authorization"] == "Bearer sk-x")
+
+    other = _llm_headers("sk-x", "https://api.openai.com/v1")
+    check(
+        "其他提供商不带归属头",
+        "HTTP-Referer" not in other and "X-Title" not in other,
+        other,
+    )
+    check("其他提供商仍带鉴权", other["Authorization"] == "Bearer sk-x")
+
+    check(
+        "没有 key 时不带鉴权",
+        "Authorization" not in _llm_headers("", "https://openrouter.ai/api/v1"),
+    )
+
+    # 真的发请求时，这两个头会透传到 httpx
+    with mock.patch("app.review.example.httpx.Client") as client_cls:
+        fake_client = client_cls.return_value.__enter__.return_value
+        fake_client.post.return_value.json.return_value = {
+            "choices": [{"message": {"content": '{"sentence": "x"}'}}]
+        }
+        from app.review.example import _request_example
+
+        _request_example(
+            "https://openrouter.ai/api/v1", "sk-x", "m", "prompt"
+        )
+        sent = fake_client.post.call_args.kwargs["headers"]
+        check(
+            "发往 OpenRouter 的请求带上归属头",
+            sent.get("HTTP-Referer") == "https://pi.dev"
+            and sent.get("X-Title") == "pi",
+            sent,
+        )
+        check(
+            "Client 关掉 trust_env，不让 httpx 自己解析 NO_PROXY",
+            client_cls.call_args.kwargs.get("trust_env") is False,
+            client_cls.call_args.kwargs,
+        )
+
+
+def test_llm_proxy_env() -> None:
+    print("\n[18b] 例句请求的代理解析与 NO_PROXY 坑")
+
+    from app.review.example import _request_example, _resolve_proxy
+
+    # 回归：这台机器的 NO_PROXY 里带方括号 IPv6（``[::1]``），httpx 自己解析
+    # 时会在构造 Client 阶段抛 ``InvalidURL: Invalid port``，例句请求永远
+    # 发不出去（日志里刷屏的「Invalid port: ':1]'」就是这么来的）。
+    hostile = {"NO_PROXY": "localhost,127.0.0.1,::1,[::1]"}
+    fake_reply = {"choices": [{"message": {"content": '{"sentence": "x"}'}}]}
+
+    with mock.patch.dict(
+        os.environ,
+        {
+            **hostile,
+            "MDX_LLM_PROXY": "",
+            "HTTPS_PROXY": "",
+            "https_proxy": "",
+            "HTTP_PROXY": "",
+            "http_proxy": "",
+        },
+    ):
+        with mock.patch("app.review.example.httpx.Client") as client_cls:
+            fake_client = client_cls.return_value.__enter__.return_value
+            fake_client.post.return_value.json.return_value = fake_reply
+            result = _request_example(
+                "https://openrouter.ai/api/v1", "sk-x", "m", "prompt"
+            )
+            check(
+                "带方括号 IPv6 的 NO_PROXY 下请求照常发出",
+                result == {"sentence": "x"},
+                result,
+            )
+            check(
+                "没配代理时不传 proxy（直连）",
+                "proxy" not in client_cls.call_args.kwargs,
+                client_cls.call_args.kwargs,
+            )
+
+    with mock.patch.dict(
+        os.environ,
+        {
+            "MDX_LLM_PROXY": "",
+            "HTTPS_PROXY": "",
+            "https_proxy": "",
+            "HTTP_PROXY": "",
+            "http_proxy": "",
+        },
+    ):
+        check("没有任何代理变量时返回 None", _resolve_proxy() is None)
+
+    with mock.patch.dict(
+        os.environ,
+        {"MDX_LLM_PROXY": "http://p:1", "https_proxy": "http://q:2"},
+    ):
+        check("MDX_LLM_PROXY 优先", _resolve_proxy() == "http://p:1")
+
+    with mock.patch.dict(
+        os.environ,
+        {"MDX_LLM_PROXY": "", "HTTPS_PROXY": "", "https_proxy": "http://q:2"},
+    ):
+        check("退回 https_proxy", _resolve_proxy() == "http://q:2")
+
+    # 有代理时把 URL 显式塞给 Client 的 proxy=，同样绕开 httpx 的解析
+    with mock.patch.dict(os.environ, {**hostile, "https_proxy": "http://127.0.0.1:7897"}):
+        with mock.patch("app.review.example.httpx.Client") as client_cls:
+            fake_client = client_cls.return_value.__enter__.return_value
+            fake_client.post.return_value.json.return_value = fake_reply
+            result = _request_example(
+                "https://openrouter.ai/api/v1", "sk-x", "m", "prompt"
+            )
+            check(
+                "有代理时代理地址显式传给 Client",
+                client_cls.call_args.kwargs.get("proxy")
+                == "http://127.0.0.1:7897"
+                and result == {"sentence": "x"},
+                (client_cls.call_args.kwargs, result),
+            )
 
 
 # ── 5. 接口 ───────────────────────────────────────────────────────────
 
 
 def test_api() -> None:
-    print("\n[13] REST 接口与页面")
+    print("\n[19] REST 接口与页面")
 
     from fastapi.testclient import TestClient
 
     from app.main import app as fastapi_app
+    from app.review import api as review_api
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "review.db"
@@ -595,8 +1335,16 @@ def test_api() -> None:
             check("状态接口可用", resp.status_code == 200, resp.text[:200])
             body = resp.json()
             check(
-                "状态里带队列与通知可用性",
-                "queue_size" in body and "notification_available" in body,
+                "状态里带会话与通知可用性",
+                "due_count" in body
+                and "today_rated" in body
+                and "next_notify_at" in body
+                and "notification_available" in body,
+                list(body),
+            )
+            check(
+                "状态里不再有今日推送数",
+                "today_count" not in body,
             )
 
             resp = client.put(
@@ -610,9 +1358,31 @@ def test_api() -> None:
                 and resp.json()["max_per_day"] == 5,
                 resp.text[:200],
             )
+            check(
+                "配置里不再有每词每日上限",
+                "max_per_word_per_day" not in resp.json(),
+            )
+            check(
+                "配置里不再有通知地址模板",
+                "open_url_template" not in resp.json()
+                and "page_base" not in resp.json(),
+                list(resp.json()),
+            )
 
             resp = client.post("/api/review/sync")
             check("同步接口可用", resp.status_code == 200, resp.text[:200])
+
+            resp = client.get("/api/review/session?mode=auto")
+            check("会话接口可用", resp.status_code == 200, resp.text[:200])
+            session = resp.json()
+            check(
+                "会话带词表与状态",
+                "words" in session and "state" in session and "today" in session,
+                list(session),
+            )
+
+            resp = client.get("/api/review/session?mode=bogus")
+            check("非法会话模式被拒绝", resp.status_code == 422, resp.text[:200])
 
             resp = client.get("/api/review/card")
             check("卡片接口可用（无卡片时返回 null）", resp.status_code == 200)
@@ -623,8 +1393,30 @@ def test_api() -> None:
                 resp.status_code == 200 and "text/html" in resp.headers["content-type"],
                 resp.headers.get("content-type", ""),
             )
-            check("页面里含复习卡片", "rate-remembered" in resp.text)
+            # 单文件页面（HTML+CSS+JS）改了浏览器必须马上拿到：不然启发式
+            # 缓存会让旧 JS 活几个小时，表现为「接口返回是对的，页面还按
+            # 旧代码渲染」
+            check(
+                "页面每次都回服务器验证（no-cache）",
+                resp.headers.get("cache-control") == "no-cache",
+                resp.headers.get("cache-control", ""),
+            )
+            page = resp.text
+            check("页面里有立即复习", "立即复习" in page)
+            check("页面里有复习卡片", "rate-remembered" in page)
+            check("页面渲染搭配的中文意思", "collocation-zh" in page)
+            check("页面预加载后面卡片的例句", "ensurePrefetch" in page)
+            check("页面里有设置齿轮", "settings-gear" in page)
+            check("页面里有设置弹层", "settings-dialog" in page)
+            check("页面里还有开启开关", "开启复习提醒" in page)
+            check("喇叭紧挨单词（word-line）", "word-line" in page)
+            check("页面显示下次提醒", "下次提醒" in page)
+            check("页面不再有测试通知按钮", "测试通知" not in page)
+            check("页面不再有通知地址配置", "通知点击后打开的地址" not in page)
+            for gone in ("立即推送", "同步队列", "清空队列"):
+                check(f"页面不再有「{gone}」", gone not in page)
 
+            word_id = next(iter(store.load_schedule().values()))["word_id"]
             resp = client.post("/api/review/rate", json={"word_id": "nope", "kind": "remembered"})
             check("给不存在的词评分不报错", resp.status_code == 200)
 
@@ -633,20 +1425,64 @@ def test_api() -> None:
             )
             check("非法评分被拒绝", resp.status_code == 400, resp.text[:200])
 
+            resp = client.post(
+                "/api/review/rate",
+                json={"word_id": word_id, "kind": "remembered", "next_word_id": word_id},
+            )
+            check("评分可带 next_word_id", resp.status_code == 200, resp.text[:200])
+
+            resp = client.post("/api/review/example", json={"word_id": word_id})
+            check("例句接口可用", resp.status_code == 200, resp.text[:200])
+
+            resp = client.post("/api/review/example", json={"word_id": "nope"})
+            check("不存在的词没有例句", resp.status_code == 404, resp.text[:200])
+
+            # 测试通知：必须 mock 掉发送器——否则在 Windows 上每跑一次测试
+            # 就真弹一条通知，通知栏会被刷疯
+            with mock.patch.object(
+                review_api, "send_test_notification", return_value=True
+            ) as fake_notify:
+                resp = client.post("/api/review/notify-test")
+                check("测试通知接口可用", resp.status_code == 200, resp.text[:200])
+                check(
+                    "测试通知打开固定复习地址",
+                    resp.json()["open_url"] == REVIEW_PAGE_URL,
+                    resp.text[:200],
+                )
+                check(
+                    "通知地址取的是固定常量",
+                    fake_notify.call_args.args[0] == REVIEW_PAGE_URL,
+                    fake_notify.call_args,
+                )
+
+            with mock.patch.object(
+                review_api, "send_test_notification", return_value=False
+            ):
+                resp = client.post("/api/review/notify-test")
+                check("通知发送失败时返回 503", resp.status_code == 503, resp.text[:200])
+
 
 def main() -> int:
     test_advance_stage()
     test_apply_advanced_stage()
     test_backoff_and_interval()
     test_pick_due_entries()
+    test_session_pickers()
     test_quiet_hours()
     test_calendar_helpers()
-    test_next_wakeup()
+    test_next_times()
     test_store_roundtrip()
+    test_store_migration()
     test_sync_queue()
     test_run_tick()
+    test_session()
     test_rate_and_card()
+    test_refresh_example()
+    test_collocation_meaning()
     test_open_url()
+    test_batch_notification_text()
+    test_llm_headers()
+    test_llm_proxy_env()
     test_api()
 
     print()

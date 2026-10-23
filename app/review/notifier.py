@@ -4,6 +4,9 @@
 协议激活地址——**点击通知会直接用默认浏览器打开那个地址**，后端不用守着
 等回调。
 
+每天最多一条通知：一批到期的词合成一条「今天有 N 个单词要复习」，
+点进去是一个复习会话，一张张复习完，不再一次一个词地轰炸通知中心。
+
 非 Windows 平台（或没装 ``windows-toasts``）上本模块会安静地降级：
 返回 ``False``，调度器按「推送失败」处理并退避。
 """
@@ -12,13 +15,13 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from typing import Optional, Sequence
 
 from app.review.constants import (
-    CONTEXT_MESSAGE_MAX_LENGTH,
     DEFAULT_TOAST_AUMID,
-    EXAMPLE_MAX_LENGTH,
-    NOTIFY_FALLBACK_BODY,
+    NOTIFY_BATCH_BODY_SUFFIX,
+    NOTIFY_BATCH_PREVIEW_WORDS,
+    NOTIFY_BATCH_TITLE,
     TOAST_ATTRIBUTION,
 )
 
@@ -50,22 +53,22 @@ def is_available() -> bool:
     return _load_toaster() is not None
 
 
-def build_context_message(translation: str) -> str:
-    """通知副标题：翻译的第一行，超长截断。"""
-    line = (translation or "").split("\n")[0].strip()
-    if len(line) <= CONTEXT_MESSAGE_MAX_LENGTH:
-        return line
-    return f"{line[: CONTEXT_MESSAGE_MAX_LENGTH - 1]}…"
+def build_batch_title(count: int) -> str:
+    """批量提醒的标题：一天就这一条，数字就是今天要复习的词数。"""
+    return NOTIFY_BATCH_TITLE.format(count=count)
 
 
-def build_body(sentence: str) -> str:
-    """通知正文：例句，超长截断。"""
-    text = (sentence or "").strip()
-    if not text:
-        return NOTIFY_FALLBACK_BODY
-    if len(text) <= EXAMPLE_MAX_LENGTH:
-        return text
-    return f"{text[: EXAMPLE_MAX_LENGTH - 1]}…"
+def build_batch_body(words: Sequence[str]) -> str:
+    """批量提醒的正文：预览前几个词，剩下的折叠成"等 N 个"。"""
+    preview = [str(word).strip() for word in words if str(word).strip()]
+    shown = preview[:NOTIFY_BATCH_PREVIEW_WORDS]
+    if not shown:
+        return f"点击开始复习"
+    text = "、".join(shown)
+    hidden = len(preview) - len(shown)
+    if hidden > 0:
+        text += f" 等 {hidden} 个"
+    return f"{text}{NOTIFY_BATCH_BODY_SUFFIX}"
 
 
 def send_notification(
@@ -100,20 +103,19 @@ def send_notification(
     return True
 
 
-def send_review_notification(
-    word: str,
-    translation: str,
-    sentence: str,
+def send_batch_notification(
+    count: int,
+    words: Sequence[str],
     launch_url: Optional[str],
 ) -> bool:
-    """推送一条复习提醒。
+    """推送当天的唯一一条复习提醒。
 
-    通知刻意只当门铃：标题就是生词本身——「咦，这个词……？」才是复习的触发点，
-    Windows 折叠后的气泡也只显示一行。正文放例句、副标题放翻译，展开时信息才够用。
+    一批到期的词只发一条通知：标题报数、正文预览前几个词，点击打开复习
+    页面直接进入会话——不再一次一个词地刷通知中心。
     """
     return send_notification(
-        title=word,
-        body=build_body(sentence),
+        title=build_batch_title(count),
+        body=build_batch_body(words),
         launch_url=launch_url,
     )
 

@@ -200,6 +200,26 @@ def get_day_key(date: datetime) -> str:
     return f"{date.year:04d}-{date.month:02d}-{date.day:02d}"
 
 
+def get_start_of_day_ms(now_ms: int) -> int:
+    """``now_ms`` 当天本地零点（毫秒时间戳）。
+
+    「今天是否已经复习过」按本地日历日算，跨过午夜就重新计数。
+    """
+    date = datetime.fromtimestamp(now_ms / 1000)
+    start = date.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(start.timestamp() * 1000)
+
+
+def get_end_of_day_ms(now_ms: int) -> int:
+    """``now_ms`` 当天本地 23:59:59.999（毫秒时间戳）。
+
+    每日配额耗尽时，当天剩余的到期词推迟到这一刻——既是"今天结束"
+    （会话里仍算今天到期，用户随时能手动复习），又不会立刻再次到期
+    把调度器变成空转的热循环。
+    """
+    return get_start_of_day_ms(now_ms) + 24 * 60 * 60 * 1000 - 1
+
+
 def get_start_of_next_day(date: datetime) -> int:
     """明天零点（毫秒时间戳）。"""
     nxt = (date + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -230,23 +250,66 @@ def get_next_wakeup_at(
     return max(allowed, now + MIN_WAKEUP_DELAY_MS)
 
 
+def get_next_notify_at(
+    entries: Mapping[str, Mapping[str, Any]],
+    review_config: Mapping[str, Any],
+    stats: Mapping[str, dict[str, Any]],
+    now: int,
+) -> Optional[int]:
+    """下一次真会弹出通知的时刻；不会再响时返回 ``None``。
+
+    和 :func:`get_next_wakeup_at` 的区别：那个只看到期时间（调度器什么时候
+    醒），这个要看闸门——
+
+    - 提醒功能关着 → 永远不响；
+    - 今天已经提醒过（或额度用完）→ 一天只响一次，下一轮最早也是明天；
+    - 时刻落在免打扰时段 → 推到窗口结束。
+
+    所以它才是用户关心的「下次提醒」，而不是某个词单纯的 SRS 到期时间
+    （被配额推迟的词，到期时间只是今天 23:59:59 的占位值）。
+    """
+    if not review_config.get("enabled"):
+        return None
+
+    pending = [
+        int(entry.get("next_due_at", 0))
+        for entry in entries.values()
+        if not entry.get("graduated")
+    ]
+    if not pending:
+        return None
+
+    now_dt = datetime.fromtimestamp(now / 1000)
+    today_key = get_day_key(now_dt)
+    today_total = int(stats.get(today_key, {}).get("total", 0))
+
+    earliest = min(pending)
+    if today_total > 0:
+        # 今天已经响过了：一天只提醒一次，下一轮最早也是明天零点
+        earliest = max(earliest, get_start_of_next_day(now_dt))
+
+    due_date = datetime.fromtimestamp(max(earliest, now) / 1000)
+    allowed = get_next_allowed_timestamp(due_date, review_config.get("quiet_hours", {}))
+    return max(allowed, now + MIN_WAKEUP_DELAY_MS)
+
+
 def count_pending_entries(entries: Mapping[str, Mapping[str, Any]]) -> int:
     """已推送但还没评分的词条数量。"""
     return sum(1 for entry in entries.values() if entry.get("pending_review"))
 
 
-def pick_next_pending_entry(
+def pick_pending_entries(
     entries: Mapping[str, Mapping[str, Any]],
-    exclude_word_id: Optional[str] = None,
-) -> Optional[dict[str, Any]]:
-    """取下一个待评分的词条（推送时间最早的优先）。"""
+) -> list[dict[str, Any]]:
+    """挑出已提醒但还没评分的词条（推送时间最早的优先）。
+
+    返回的是**队列里的原对象**——调用方直接改它们，改完再整体落库。
+    """
     candidates = [
-        dict(entry)
+        entry
         for entry in entries.values()
-        if entry.get("pending_review") and entry.get("word_id") != exclude_word_id
+        if entry.get("pending_review") and not entry.get("graduated")
     ]
-    if not candidates:
-        return None
     candidates.sort(
         key=lambda e: (
             int(e.get("last_notified_at") or 0),
@@ -254,7 +317,91 @@ def pick_next_pending_entry(
             str(e.get("word_id", "")),
         )
     )
-    return candidates[0]
+    return candidates
+
+
+def pick_next_pending_entry(
+    entries: Mapping[str, Mapping[str, Any]],
+    exclude_word_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """取下一个待评分的词条（推送时间最早的优先）。"""
+    for entry in pick_pending_entries(entries):
+        if entry.get("word_id") != exclude_word_id:
+            return entry
+    return None
+
+
+def _rated_today(entry: Mapping[str, Any], day_start_ms: Optional[int]) -> bool:
+    """这个词今天是否已经被复习过（评过分）。"""
+    if day_start_ms is None:
+        return False
+    return int(entry.get("last_rated_at") or 0) >= day_start_ms
+
+
+def _entry_sort_key(entry: Mapping[str, Any]) -> tuple:
+    """队列的统一排序：最该复习的（逾期最久、星级最低）排在前面。"""
+    return (
+        int(entry.get("next_due_at", 0)),
+        int(entry.get("star", 1)),
+        int(entry.get("push_count", 0)),
+        str(entry.get("word_id", "")),
+    )
+
+
+def pick_due_by(
+    entries: Mapping[str, Mapping[str, Any]],
+    deadline_ms: int,
+    limit: int,
+    *,
+    day_start_ms: Optional[int] = None,
+    exclude_ids: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """挑出 ``deadline_ms`` 之前到期的词条（会话用的"今天到期"）。
+
+    和 :func:`pick_due_entries` 的区别只在截止时间：调度器用"此刻"
+    （``now``）决定要不要发通知，会话用"今天结束"决定今天复习什么——
+    被配额推迟到今天 23:59:59 的词，会话里仍然算今天到期。
+
+    传了 ``day_start_ms`` 就排除今天已复习过的词；``exclude_ids`` 里
+    的词（比如已经在会话里的 pending 词）也不重复出现。
+    """
+    excluded = set(exclude_ids)
+    due = [
+        entry
+        for entry in entries.values()
+        if not entry.get("graduated")
+        and int(entry.get("next_due_at", 0)) <= deadline_ms
+        and entry.get("word_id") not in excluded
+        and not _rated_today(entry, day_start_ms)
+    ]
+    due.sort(key=_entry_sort_key)
+    return due[: max(0, limit)]
+
+
+def pick_upcoming_entries(
+    entries: Mapping[str, Mapping[str, Any]],
+    now_ms: int,
+    limit: int,
+    *,
+    day_start_ms: Optional[int] = None,
+    exclude_ids: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """挑出还没到期、但即将到期的词条（"提前复习"的候选）。
+
+    到期最早的排在前面——被每日配额推迟的词（``next_due_at`` = 今天
+    结束）会排在最前，正是最该先补的那批。
+    """
+    excluded = set(exclude_ids)
+    upcoming = [
+        entry
+        for entry in entries.values()
+        if not entry.get("graduated")
+        and int(entry.get("next_due_at", 0)) > now_ms
+        and entry.get("word_id") not in excluded
+        and not _rated_today(entry, day_start_ms)
+    ]
+    upcoming.sort(key=_entry_sort_key)
+    return upcoming[: max(0, limit)]
 
 
 def defer_entries(

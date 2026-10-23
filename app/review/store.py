@@ -3,7 +3,8 @@
 与生词本共用同一个 SQLite 文件（``user.db``），表结构与扩展里原本存在
 ``chrome.storage.local`` 的状态一一对应：
 
-- ``review_schedule``  —— 每个词的复习进度（阶梯、到期时间、推送次数……）
+- ``review_schedule``  —— 每个词的复习进度（阶梯、到期时间、推送次数、
+  最近评分时间……）
 - ``review_stats``     —— 每日推送配额统计
 - ``review_settings``  —— 复习提醒的配置（JSON）
 """
@@ -19,14 +20,12 @@ from typing import Any, Iterator, Optional
 from app.review.constants import (
     DEFAULT_GRADUATED_ACTION,
     DEFAULT_MAX_PER_DAY,
-    DEFAULT_MAX_PER_WORD_PER_DAY,
-    DEFAULT_OPEN_URL_TEMPLATE,
-    DEFAULT_PAGE_BASE,
     DEFAULT_QUIET_HOURS_END,
     DEFAULT_QUIET_HOURS_START,
     ENTRY_TTL_DAYS,
     STATS_TTL_DAYS,
 )
+from app.review.example import normalize_collocations
 from app.review.schedule import get_day_key
 from app.vocabulary import DB_FILE
 
@@ -53,6 +52,8 @@ CREATE TABLE IF NOT EXISTS review_schedule (
     last_angle          TEXT,
     pending_review      INTEGER NOT NULL DEFAULT 0,
     graduated           INTEGER NOT NULL DEFAULT 0,
+    -- 最近一次评分（复习）的时间，用来算「今天复习过了没有」
+    last_rated_at       INTEGER,
     synced_at           INTEGER NOT NULL
 );
 
@@ -70,6 +71,20 @@ CREATE TABLE IF NOT EXISTS review_settings (
     value  TEXT NOT NULL
 );
 """
+
+#: 后加的列。``ALTER TABLE ADD COLUMN`` 不能带约束，所以列定义单独放这里，
+#: 迁移时按需补齐（``CREATE TABLE IF NOT EXISTS`` 对老库是空操作）。
+_MIGRATION_COLUMNS = (
+    ("last_rated_at", "INTEGER"),
+)
+
+#: 已经下线、但可能还躺在老库配置里的键。读出来时顺手扔掉，别让它们一直
+#: 跟着配置合并流传下去。
+_REMOVED_CONFIG_KEYS = (
+    "max_per_word_per_day",
+    "open_url_template",
+    "page_base",
+)
 
 #: 词条在数据库里的列顺序，和 :func:`_row_to_entry` 一一对应。
 _ENTRY_COLUMNS = (
@@ -92,6 +107,7 @@ _ENTRY_COLUMNS = (
     "last_angle",
     "pending_review",
     "graduated",
+    "last_rated_at",
     "synced_at",
 )
 
@@ -102,15 +118,12 @@ def default_config() -> dict[str, Any]:
         "enabled": False,
         "generate_example": True,
         "max_per_day": DEFAULT_MAX_PER_DAY,
-        "max_per_word_per_day": DEFAULT_MAX_PER_WORD_PER_DAY,
         "graduated_action": DEFAULT_GRADUATED_ACTION,
         "quiet_hours": {
             "enabled": True,
             "start": DEFAULT_QUIET_HOURS_START,
             "end": DEFAULT_QUIET_HOURS_END,
         },
-        "open_url_template": DEFAULT_OPEN_URL_TEMPLATE,
-        "page_base": DEFAULT_PAGE_BASE,
         "llm": {"base_url": "", "api_key": "", "model": ""},
     }
 
@@ -120,9 +133,27 @@ def _ensure_db() -> None:
     conn = sqlite3.connect(DB_FILE)
     try:
         conn.executescript(_CREATE_SQL)
+        _migrate_db(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate_db(conn: sqlite3.Connection) -> None:
+    """给已存在的表补上新增的列。
+
+    ``CREATE TABLE IF NOT EXISTS`` 对已存在的表是空操作，所以老库里不会
+    凭空多出 ``last_rated_at`` 这一列——不补的话，查询会直接
+    ``no such column``（沿用生词本那边的迁移写法）。
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(review_schedule)")}
+    if not existing:
+        # 表还没建（全新库），_CREATE_SQL 里已经带了新列
+        return
+
+    for name, ddl in _MIGRATION_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE review_schedule ADD COLUMN {name} {ddl}")
 
 
 @contextmanager
@@ -170,7 +201,10 @@ def load_config() -> dict[str, Any]:
     if not isinstance(stored, dict):
         return default_config()
 
-    return _merge_config(default_config(), stored)
+    merged = _merge_config(default_config(), stored)
+    for key in _REMOVED_CONFIG_KEYS:
+        merged.pop(key, None)
+    return merged
 
 
 def save_config(updates: dict[str, Any]) -> dict[str, Any]:
@@ -193,6 +227,17 @@ def save_config(updates: dict[str, Any]) -> dict[str, Any]:
 # ── 调度队列 ────────────────────────────────────────────────────────
 
 
+def _parse_json_list(raw: Any) -> list[Any]:
+    """把库里存的 JSON 数组读回来；不是数组就返回空列表。"""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 def _row_to_entry(row: sqlite3.Row) -> dict[str, Any]:
     entry = {key: row[key] for key in _ENTRY_COLUMNS}
     entry["star"] = int(entry["star"] or 1)
@@ -202,18 +247,16 @@ def _row_to_entry(row: sqlite3.Row) -> dict[str, Any]:
     entry["failure_count"] = int(entry["failure_count"] or 0)
     entry["pending_review"] = bool(entry["pending_review"])
     entry["graduated"] = bool(entry["graduated"])
+    entry["last_rated_at"] = (
+        int(entry["last_rated_at"]) if entry.get("last_rated_at") else None
+    )
     entry["synced_at"] = int(entry["synced_at"] or 0)
 
-    collocations: list[str] = []
-    raw = entry.get("last_collocations")
-    if raw:
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                collocations = [str(item) for item in parsed]
-        except (TypeError, ValueError):
-            collocations = []
-    entry["last_collocations"] = collocations
+    # 搭配统一成 [{"text", "chinese"}]：新数据带中文意思，老库里的纯字符串
+    # 读出来时意思留空（页面照常显示搭配本身）
+    entry["last_collocations"] = normalize_collocations(
+        _parse_json_list(entry.get("last_collocations"))
+    )
 
     return entry
 
@@ -239,6 +282,7 @@ def _entry_to_row(entry: dict[str, Any]) -> tuple:
         entry.get("last_angle"),
         1 if entry.get("pending_review") else 0,
         1 if entry.get("graduated") else 0,
+        entry.get("last_rated_at"),
         int(entry.get("synced_at", 0) or 0),
     )
 
@@ -293,6 +337,7 @@ def upsert_schedule_entries(entries: list[dict[str, Any]]) -> None:
                 last_angle = excluded.last_angle,
                 pending_review = excluded.pending_review,
                 graduated = excluded.graduated,
+                last_rated_at = excluded.last_rated_at,
                 synced_at = excluded.synced_at
             """,
             values,

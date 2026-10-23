@@ -72,7 +72,7 @@ review.md / eudic.md），**改行为前先读对应文档，文档与代码同�
    把新出现的干净英文单词写进生词本（翻译自动查 `oaldpe.db` 生成）。
 2. **复习调度器**（`app/review/scheduler.py`）——asyncio 后台任务，按
    `get_next_wakeup_at()` 精确计算下次唤醒时刻（免打扰会把唤醒推后），
-   到点把到期词推成 Windows 系统通知。
+   到点把当天批次合成**一条** Windows 系统通知（一天最多提醒一次）。
 
 两者启动失败都只记日志、不影响 API 服务。
 
@@ -89,13 +89,13 @@ app/
   review/
     constants.py   # 阶梯间隔、配额、退避、通知文案等全部可调参数
     schedule.py    # 纯函数调度算法（不碰 DB、不发通知，可单测）
-    store.py       # 复习三张表的落库
-    service.py     # 业务编排：同步队列 / 跑一轮调度 / 评分 / 组装卡片
+    store.py       # 复习三张表的落库（含 last_rated_at 老库补列迁移）
+    service.py     # 业务编排：同步队列 / 跑一轮调度（每日一次批量提醒）/ 会话 / 评分 / 组卡片
     scheduler.py   # 常驻循环（asyncio task）
-    notifier.py    # windows-toasts 通知，launch 协议激活地址
-    example.py     # 可选 LLM 造句，失败逐级降级
+    notifier.py    # windows-toasts 通知（每日一次批量），launch 协议激活地址
+    example.py     # 可选 LLM 造句，失败逐级降级（按需生成，不阻塞调度）
     api.py         # /api/review/* 路由 + /review 页面
-    static/review.html  # 单文件复习+配置页
+    static/review.html  # 单文件会话式复习+配置页
 ```
 
 ### 关键设计决策（改代码前必须知道）
@@ -117,9 +117,10 @@ app/
   （`EUDIC_TLS_MAX=1.3` 可放开）；httpx 的 `trust_env=True` 解析带方括号 IPv6 的
   NO_PROXY 会抛异常，所以代理自己从环境变量取、`trust_env` 保持 `False`。
   重试只重试传输层错误（4 次指数退避），HTTP 4xx/5xx 立刻抛。
-- **复习调度是全局闸门**：免打扰时段和每日配额触发时把**整队**到期词一起推迟，
-  不是逐条放行；单轮最多推 3 条（`MAX_PUSHES_PER_TICK`）；推送失败按指数退避
-  且不占用阶梯位置。
+- **复习调度是全局闸门**：免打扰时段内不发通知也**不改到期时间**（唤醒点由
+  `get_next_wakeup_at` 推到窗口结束——免打扰只挡通知，不挡手动复习）；每日配额
+  触发时把当天剩余到期词一起推迟到今天 23:59:59，不是逐条放行；**一天最多提醒
+  一次**（一个批次一条通知，超额词进会话）；推送失败按指数退避且不占用阶梯位置。
 - **安全约束**：`update_word` 只允许改 `star`/`translation`/`note`；`source` 等
   欧路字段不暴露给客户端 PATCH（否则能把本地词伪造成欧路词、借删除接口删掉
   欧路收藏）；`list_words` 的排序字段/方向走白名单防注入。
@@ -135,8 +136,12 @@ app/
    `user.db`。00:00–08:00 免打扰暂停轮询，`--once` 手动同步不受限。
 3. **复习提醒**：扩展闪卡评分调 `POST /api/vocabulary/{id}/review` → 后端
    `sync_review_queue()` 把复习过的词收进 `review_schedule`（阶梯 0、立即到期）
-   → 调度器到点推 Windows 通知（标题=单词，点击用默认浏览器打开
-   `/review?word={word_id}`）→ 复习页「记得跨两级 / 忘了退一级」。
+   → 调度器到点把当天批次合成**一条** Windows 通知（标题="今天有 N 个单词要复习"，
+   点击用默认浏览器打开 `/review`）→ 页面直接进入复习会话，一张张复习完
+   （「记得跨两级 / 忘了退一级」）；「立即复习」随时可开一场不受配额限制的手动
+   会话，例句在会话开始后按队列顺序**预加载**（页面保持最多 3 个请求在飞，
+`/api/review/example` 在线程池里跑，不占事件循环），切到某个词时例句和
+   固定搭配通常已经在了。
 4. **欧路同步**：`POST /api/eudic/sync` → 翻页拉全量（page≤50、page_size≤100，
    单本最多 5000 词）→ `clean_text()` 洗掉 HTML → `upsert_eudic_words()` 合并；
    本地新增/改星级/删除按需写回欧路。
@@ -169,3 +174,4 @@ app/
 | `EUDIC_PROXY` / `HTTP(S)_PROXY` | — | 欧路请求代理 |
 | `EUDIC_TLS_MAX` | `1.2` | 欧路请求 TLS 上限 |
 | `MDX_REVIEW_TOAST_AUMID` | `Microsoft.WindowsPowerShell` | 通知归属 AUMID |
+| `MDX_LLM_PROXY` | — | 例句 LLM 请求的代理，优先于 `HTTPS_PROXY` 等标准变量 |

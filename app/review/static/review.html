@@ -7,92 +7,244 @@
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #f6f7f9;
+    --bg: #f5f5f7;
     --card: #ffffff;
-    --fg: #1c1f24;
-    --muted: #6b7280;
-    --line: #e5e7eb;
-    --accent: #2563eb;
+    --fg: #1d1d1f;
+    --muted: #86868b;
+    --line: #e8e8ed;
+    --track: #ececed;
+    --soft: #f5f5f7;
+    --field: #ffffff;
+    --accent: #1d1d1f;
     --accent-fg: #ffffff;
-    --ok: #16a34a;
-    --warn: #d97706;
-    --danger: #dc2626;
+    --ok: #248a3d;
+    --danger: #d70015;
+    --switch-off: #d9d9de;
+    --shadow: 0 1px 2px rgb(0 0 0 / 5%), 0 14px 36px rgb(0 0 0 / 7%);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #14161a;
-      --card: #1c1f25;
-      --fg: #e6e8ec;
-      --muted: #9aa2ae;
-      --line: #2b303a;
-      --accent: #3b82f6;
+      --bg: #000000;
+      --card: #1c1c1e;
+      --fg: #f5f5f7;
+      --muted: #98989d;
+      --line: #2c2c2e;
+      --track: #2c2c2e;
+      --soft: #2c2c2e;
+      --field: #2c2c2e;
+      --accent: #f5f5f7;
+      --accent-fg: #1d1d1f;
+      --ok: #30d158;
+      --danger: #ff453a;
+      --switch-off: #3a3a3c;
+      --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 14px 36px rgb(0 0 0 / 50%);
     }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    padding: 24px 16px 64px;
+    padding: 40px 20px 28px;
     background: var(--bg);
     color: var(--fg);
-    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui,
+      "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
   }
-  .wrap { max-width: 760px; margin: 0 auto; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-  h1 { font-size: 20px; margin: 0; }
-  h2 { font-size: 15px; margin: 0 0 12px; }
+  .wrap { max-width: 680px; margin: 0 auto; flex: 1; display: flex; flex-direction: column; width: 100%; }
+  header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 12px; margin-bottom: 20px;
+  }
+  h1 { font-size: 17px; margin: 0; font-weight: 700; letter-spacing: .2px; }
+  .subtitle { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
   .card {
     background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 18px;
-    margin-top: 16px;
+    border-radius: 20px;
+    box-shadow: var(--shadow);
+    padding: 28px 34px 32px;
+    flex: 1;
+    min-height: 500px;
+    display: flex;
+    flex-direction: column;
   }
   .muted { color: var(--muted); }
   .small { font-size: 13px; }
-  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .spread { justify-content: space-between; }
-  .word { font-size: 40px; font-weight: 700; letter-spacing: -0.5px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
-  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
-  .stat dt { font-size: 12px; color: var(--muted); margin: 0; }
-  .stat dd { font-size: 18px; font-weight: 600; margin: 2px 0 0; }
-  button {
-    font: inherit;
-    padding: 7px 14px;
-    border-radius: 8px;
-    border: 1px solid var(--line);
-    background: var(--card);
-    color: var(--fg);
-    cursor: pointer;
+  .center { text-align: center; }
+  .hidden { display: none !important; }
+  /* 三态撑满卡片：空闲/完成垂直居中，会话中把操作按钮锚到底部 */
+  #state-idle, #state-done { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+  #state-active { flex: 1; display: flex; flex-direction: column; }
+
+  /* ── 按钮 ──────────────────────────────────────────────────────── */
+  button { font: inherit; }
+  .btn-primary {
+    background: var(--accent); color: var(--accent-fg);
+    border: none; cursor: pointer; font-weight: 600;
+    padding: 12px 36px; border-radius: 999px;
+    transition: opacity .15s;
   }
-  button:hover:not(:disabled) { border-color: var(--accent); }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
-  button.good { background: var(--ok); border-color: var(--ok); color: #fff; }
-  button.bad { background: var(--danger); border-color: var(--danger); color: #fff; }
-  input, select {
-    font: inherit; padding: 6px 9px; border-radius: 8px;
-    border: 1px solid var(--line); background: var(--bg); color: var(--fg); width: 100%;
+  .btn-primary:hover { opacity: .88; }
+  .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-primary.block { display: block; width: 100%; padding: 13px; }
+  .btn-quit {
+    border: none; background: var(--soft); color: var(--muted);
+    font-size: 13px; padding: 5px 14px; border-radius: 999px; cursor: pointer;
   }
-  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
-  .field { margin-bottom: 12px; }
-  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); font-size: 12px; color: var(--muted); }
-  .translation { white-space: pre-wrap; font-size: 15px; }
-  .example { background: var(--bg); border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
-  .collocation { display: inline-block; margin: 4px 6px 0 0; }
+  .btn-quit:hover { color: var(--fg); }
+  .icon-btn {
+    width: 38px; height: 38px; border-radius: 50%;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    box-shadow: var(--shadow); flex: none;
+  }
+  .icon-btn:hover { color: var(--muted); }
+  .icon-btn.sm { width: 30px; height: 30px; border: none; box-shadow: none; }
+
+  /* ── 会话卡片 ──────────────────────────────────────────────────── */
+  .session-top { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  .progress-text { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .pill {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    background: var(--soft); font-size: 12px; color: var(--muted); white-space: nowrap;
+  }
+  .pill.early { color: #b25000; background: rgb(210 120 20 / 12%); }
+  .progress { flex: 1; height: 4px; background: var(--track); border-radius: 999px; overflow: hidden; }
+  .progress > i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+
+  .word-row { display: flex; align-items: flex-start; justify-content: center; }
+  .word-main { display: flex; flex-direction: column; align-items: center; }
+  .word-line { display: flex; align-items: center; gap: 12px; }
+  .word { font-size: 52px; font-weight: 800; letter-spacing: -1.2px; line-height: 1.05; }
+  .phonetics { margin-top: 7px; font-size: 13px; color: var(--muted); }
+  .phonetics .ph + .ph { margin-left: 14px; }
+
+  .translation { white-space: pre-wrap; margin-top: 16px; }
+  .senses { list-style: none; margin: 16px 0 0; padding: 0; }
+  .senses li { display: flex; gap: 10px; padding: 6px 0; }
+  .sense-num { color: var(--muted); font-size: 13px; min-width: 12px; padding-top: 2px; }
+  .sense-body { flex: 1; }
+  .sense-en { display: block; color: var(--muted); font-size: 13px; margin-top: 1px; }
+
+  .def-block { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+  .def-block .label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .example { background: var(--soft); border-radius: 12px; padding: 12px 14px; }
+  .example .zh { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .collocation-item { display: inline-block; margin: 8px 14px 0 0; }
+  .collocation-zh { font-size: 12px; color: var(--muted); margin-left: 6px; }
+
+  .actions { display: flex; justify-content: center; gap: 60px; margin-top: auto; padding-top: 40px; }
+  .action { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .circle {
+    width: 58px; height: 58px; border-radius: 50%; border: none; cursor: pointer;
+    background: var(--accent); color: var(--accent-fg);
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: transform .12s ease, opacity .12s;
+  }
+  .circle:hover { opacity: .88; }
+  .circle:active { transform: scale(.94); }
+  .action-label { font-size: 13px; font-weight: 600; }
+  .action-label.bad { color: var(--danger); }
+  .action-label.good { color: var(--ok); }
+  #c-remaining { margin-top: 16px; }
+
+  /* ── 空闲 / 完成 ───────────────────────────────────────────────── */
+  .cta-area { text-align: center; padding: 46px 0 38px; }
+  .cta-text { color: var(--muted); margin: 0 0 24px; }
+  .done-emoji { font-size: 44px; margin-bottom: 8px; }
+
+  /* ── 状态 ──────────────────────────────────────────────────────── */
+  .status { margin-top: 28px; }
+  .status h2 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 0 0 12px; }
+  .stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+    gap: 12px; margin: 0;
+  }
+  .stat { background: var(--card); border-radius: 14px; padding: 13px 15px; box-shadow: var(--shadow); }
+  .stat dt { font-size: 12px; color: var(--muted); }
+  .stat dd { margin: 3px 0 0; font-size: 19px; font-weight: 700; }
+  .stat dd.small { font-size: 13px; font-weight: 600; padding-top: 5px; }
+  #s-note { margin-top: 14px; }
+
+  /* ── 设置弹层 ──────────────────────────────────────────────────── */
+  dialog#settings-dialog {
+    border: none; border-radius: 22px;
+    background: var(--card); color: var(--fg);
+    padding: 0;
+    width: 540px;
+    width: min(560px, calc(100vw - 40px));
+    max-height: 84vh;
+    max-height: min(84vh, 720px);
+    overflow: auto;
+    box-shadow: 0 24px 80px rgb(0 0 0 / 28%);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui,
+      "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  dialog#settings-dialog::backdrop { background: rgb(0 0 0 / 42%); }
+  .settings-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 24px 10px; position: sticky; top: 0;
+    background: var(--card); z-index: 1;
+  }
+  .settings-head strong { font-size: 17px; }
+  .settings-body { padding: 2px 24px 20px; }
+  .srow {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--line);
+  }
+  .srow.stack { display: block; }
+  .srow.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .srow.duo { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .duo-cell { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .slabel { font-size: 14px; display: block; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .check { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; }
+  .check input { width: 16px; height: 16px; accent-color: var(--accent); }
+  .field {
+    font: inherit; font-size: 14px; color: var(--fg); background: var(--field);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 7px 11px; width: 100%;
+  }
+  .field.num { width: 76px; text-align: center; }
+  .duo-cell select.field { width: auto; min-width: 118px; }
+  .srow.stack .field, .srow.grid2 .field { margin-top: 6px; }
+  .time-range { display: flex; align-items: center; gap: 8px; }
+  .time-range .field { width: 108px; text-align: center; }
+  #save { margin-top: 16px; }
+  #save-note { display: block; margin-top: 8px; }
+
+  /* iOS 风格开关 */
+  .switch { position: relative; display: inline-block; width: 46px; height: 28px; flex: none; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .switch .slider {
+    position: absolute; inset: 0; background: var(--switch-off);
+    border-radius: 999px; transition: background .18s; cursor: pointer;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; width: 24px; height: 24px;
+    left: 2px; top: 2px; background: #fff; border-radius: 50%;
+    transition: transform .18s; box-shadow: 0 1px 3px rgb(0 0 0 / 25);
+  }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+
   #toast {
     position: fixed; left: 50%; transform: translateX(-50%); bottom: 24px;
-    background: #111; color: #fff; padding: 9px 16px; border-radius: 8px;
+    background: #1d1d1f; color: #fff; padding: 10px 18px; border-radius: 999px;
     font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s;
+    box-shadow: 0 8px 30px rgb(0 0 0 / 25%);
   }
   #toast.show { opacity: .95; }
-  .hidden { display: none !important; }
-  details summary { cursor: pointer; font-size: 15px; font-weight: 600; }
-  .switch { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--fg); }
-  .switch input { width: auto; }
-  .defs { margin: 8px 0 0; padding-left: 18px; font-size: 14px; }
-  .defs li { margin-bottom: 3px; }
-  .zh { color: var(--muted); }
+
+  @media (max-width: 560px) {
+    body { padding: 24px 14px 28px; }
+    .card { padding: 20px 20px 24px; }
+    .word { font-size: 42px; }
+    .actions { gap: 44px; }
+    .srow { flex-wrap: wrap; }
+  }
 </style>
 </head>
 <body>
@@ -100,116 +252,160 @@
   <header>
     <div>
       <h1>mdx · 复习提醒</h1>
-      <div class="muted small" id="subtitle">艾宾浩斯主动复习 · 通知点击后回到这里</div>
+      <p class="subtitle">每天到点只提醒一次 · 点开依次复习完</p>
     </div>
-    <div class="row">
-      <label class="switch"><input type="checkbox" id="enabled" /> 开启复习提醒</label>
-    </div>
+    <button class="icon-btn" id="settings-gear" title="设置" aria-label="设置">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+    </button>
   </header>
 
-  <section class="card" id="card-area">
-    <div id="card-empty" class="muted">加载中…</div>
-    <div id="card-body" class="hidden">
-      <div class="row spread">
-        <div>
-          <div class="word" id="c-word">—</div>
-          <div class="muted small" id="c-meta"></div>
+  <!-- 复习区：空闲 / 会话中 / 完成 三态 -->
+  <section class="card">
+    <!-- 空闲 -->
+    <div id="state-idle">
+      <div class="cta-area">
+        <p class="cta-text" id="idle-text">加载中…</p>
+        <button class="btn-primary" id="start-review">立即复习</button>
+      </div>
+    </div>
+
+    <!-- 会话中 -->
+    <div id="state-active" class="hidden">
+      <div class="session-top">
+        <span class="progress-text" id="c-progress">第 1 / 1 个</span>
+        <span class="pill early hidden" id="c-early">提前复习</span>
+        <div class="progress"><i id="c-progress-bar" style="width:0%"></i></div>
+        <button class="btn-quit" id="quit-review">退出</button>
+      </div>
+
+      <div class="word-row">
+        <div class="word-main">
+          <div class="word-line">
+            <div class="word" id="c-word">—</div>
+            <button class="icon-btn sm" id="speak" title="朗读" aria-label="朗读">
+              <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M18.36 5.64a9 9 0 0 1 0 12.72"></path></svg>
+            </button>
+          </div>
+          <div class="phonetics hidden" id="c-phonetics"></div>
         </div>
-        <button id="speak" title="朗读">🔊 发音</button>
       </div>
-      <div class="translation" id="c-translation" style="margin-top:12px"></div>
-      <div class="example hidden" id="c-example-wrap">
-        <div id="c-example"></div>
-        <div class="zh small" id="c-example-zh"></div>
-        <div id="c-collocation"></div>
+
+      <div class="translation hidden" id="c-translation"></div>
+
+      <div id="c-def-wrap" class="hidden">
+        <ol class="senses" id="c-defs"></ol>
       </div>
-      <div id="c-def-wrap" class="hidden" style="margin-top:12px">
-        <div class="muted small">词典释义</div>
-        <ul class="defs" id="c-defs"></ul>
+
+      <div class="def-block" id="c-def-block">
+        <div class="label">词典释义</div>
+        <div class="example hidden" id="c-example-wrap">
+          <div id="c-example"></div>
+          <div class="zh" id="c-example-zh"></div>
+          <div id="c-collocation"></div>
+        </div>
       </div>
-      <div class="row" style="margin-top:18px">
-        <button class="bad" id="rate-forgotten">忘了</button>
-        <button class="good" id="rate-remembered">记得</button>
-        <span class="muted small" id="c-remaining"></span>
+
+      <div class="actions">
+        <div class="action">
+          <button class="circle" id="rate-forgotten" aria-label="忘了">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg>
+          </button>
+          <span class="action-label bad">忘了</span>
+        </div>
+        <div class="action">
+          <button class="circle" id="rate-remembered" aria-label="记得">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12.5 10 17.5 19 7"></polyline></svg>
+          </button>
+          <span class="action-label good">记得</span>
+        </div>
+      </div>
+      <div class="muted small center" id="c-remaining"></div>
+    </div>
+
+    <!-- 完成 -->
+    <div id="state-done" class="hidden">
+      <div class="cta-area">
+        <div class="done-emoji">🎉</div>
+        <p class="cta-text" id="done-text">完成！</p>
+        <button class="btn-primary" id="again-review">再来一组</button>
       </div>
     </div>
   </section>
 
-  <section class="card">
+  <!-- 状态 -->
+  <section class="status">
     <h2>状态</h2>
-    <dl class="grid">
-      <div class="stat"><dt>队列</dt><dd id="s-queue">0</dd></div>
-      <div class="stat"><dt>今日推送</dt><dd id="s-today">0</dd></div>
-      <div class="stat"><dt>待评分</dt><dd id="s-pending">0</dd></div>
-      <div class="stat"><dt>已毕业</dt><dd id="s-graduated">0</dd></div>
-      <div class="stat"><dt>下次到期</dt><dd id="s-next" class="small">—</dd></div>
+    <dl class="stats">
+      <div class="stat"><dt>待复习</dt><dd id="s-due">0</dd></div>
+      <div class="stat"><dt>今日已复习</dt><dd id="s-rated">0</dd></div>
+      <div class="stat"><dt>计划总数</dt><dd id="s-queue">0</dd></div>
+      <div class="stat"><dt>下次提醒</dt><dd id="s-next" class="small">—</dd></div>
     </dl>
-    <div class="row" style="margin-top:14px">
-      <button id="sync">同步队列</button>
-      <button id="tick" class="primary">立即推送</button>
-      <button id="test-notify">测试通知</button>
-      <button id="clear" class="danger">清空队列</button>
-    </div>
-    <div class="muted small" id="s-note" style="margin-top:10px"></div>
-  </section>
-
-  <section class="card">
-    <details id="settings">
-      <summary>配置</summary>
-      <div style="margin-top:14px">
-        <div class="grid">
-          <div class="field">
-            <label for="max-per-day">每天最多推送</label>
-            <input type="number" id="max-per-day" min="1" max="50" />
-          </div>
-          <div class="field">
-            <label for="max-per-word">每词每天最多推送</label>
-            <input type="number" id="max-per-word" min="1" max="10" />
-          </div>
-          <div class="field">
-            <label for="graduated">走完阶梯后</label>
-            <select id="graduated">
-              <option value="stop">停止复习</option>
-              <option value="restart">从头再来</option>
-            </select>
-          </div>
-          <div class="field">
-            <label class="switch"><input type="checkbox" id="qh-enabled" /> 免打扰时段</label>
-          </div>
-          <div class="field">
-            <label for="qh-start">免打扰开始</label>
-            <input type="time" id="qh-start" />
-          </div>
-          <div class="field">
-            <label for="qh-end">免打扰结束</label>
-            <input type="time" id="qh-end" />
-          </div>
-        </div>
-        <div class="field">
-          <label class="switch"><input type="checkbox" id="generate-example" /> 用 LLM 生成例句（不勾则用收藏时的上下文）</label>
-        </div>
-        <div class="field">
-          <label for="llm-base">LLM Base URL（OpenAI 兼容，可留空）</label>
-          <input type="text" id="llm-base" placeholder="https://api.openai.com/v1" />
-        </div>
-        <div class="field">
-          <label for="llm-key">LLM API Key</label>
-          <input type="password" id="llm-key" placeholder="sk-..." />
-        </div>
-        <div class="field">
-          <label for="llm-model">LLM 模型</label>
-          <input type="text" id="llm-model" placeholder="gpt-4o-mini" />
-        </div>
-        <div class="field">
-          <label for="open-url">通知点击后打开的地址（{word_id} 会被替换）</label>
-          <input type="text" id="open-url" />
-        </div>
-        <button class="primary" id="save">保存配置</button>
-        <span class="muted small" id="save-note"></span>
-      </div>
-    </details>
+    <p class="muted small center" id="s-note"></p>
   </section>
 </div>
+
+<!-- 设置（右上角齿轮） -->
+<dialog id="settings-dialog" aria-label="设置">
+  <div class="settings-head">
+    <strong>设置</strong>
+    <button class="icon-btn sm" id="settings-close" aria-label="关闭">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg>
+    </button>
+  </div>
+  <div class="settings-body">
+    <div class="srow">
+      <span class="slabel">开启复习提醒</span>
+      <label class="switch"><input type="checkbox" id="enabled" /><span class="slider"></span></label>
+    </div>
+    <div class="srow duo">
+      <div class="duo-cell">
+        <label class="slabel" for="max-per-day">每天复习词数</label>
+        <input class="field num" type="number" id="max-per-day" min="1" max="50" />
+      </div>
+      <div class="duo-cell">
+        <label class="slabel" for="graduated">走完阶段后</label>
+        <select class="field" id="graduated">
+          <option value="stop">停止复习</option>
+          <option value="restart">从头再来</option>
+        </select>
+      </div>
+    </div>
+    <div class="srow">
+      <div>
+        <label class="check"><input type="checkbox" id="qh-enabled" /> 免打扰时段</label>
+        <div class="hint">只挡通知，不挡手动复习</div>
+      </div>
+      <div class="time-range">
+        <input class="field" type="time" id="qh-start" />
+        <span class="muted">/</span>
+        <input class="field" type="time" id="qh-end" />
+      </div>
+    </div>
+    <div class="srow">
+      <div>
+        <label class="check"><input type="checkbox" id="generate-example" /> 用 LLM 生成例句</label>
+        <div class="hint">不勾则用收藏时的上下文</div>
+      </div>
+    </div>
+    <div class="srow stack">
+      <label class="slabel" for="llm-base">LLM Base URL（OpenAI 兼容，可留空）</label>
+      <input class="field" type="text" id="llm-base" placeholder="https://openrouter.ai/api/v1" />
+    </div>
+    <div class="srow grid2">
+      <div>
+        <label class="slabel" for="llm-key">LLM API Key</label>
+        <input class="field" type="password" id="llm-key" placeholder="sk-..." />
+      </div>
+      <div>
+        <label class="slabel" for="llm-model">LLM 模型</label>
+        <input class="field" type="text" id="llm-model" placeholder="gpt-4o-mini" />
+      </div>
+    </div>
+    <button class="btn-primary block" id="save">保存配置</button>
+    <span class="muted small center" id="save-note"></span>
+  </div>
+</dialog>
 
 <div id="toast"></div>
 
@@ -246,76 +442,248 @@ function formatTime(ts) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-let currentCard = null;
-
-function renderCard(card) {
-  currentCard = card;
-  const empty = $("card-empty");
-  const body = $("card-body");
-  if (!card) {
-    empty.textContent = "暂时没有需要复习的词。可以点「立即推送」或「同步队列」试试。";
-    empty.classList.remove("hidden");
-    body.classList.add("hidden");
-    return;
-  }
-  empty.classList.add("hidden");
-  body.classList.remove("hidden");
-
-  $("c-word").textContent = card.word || "";
-  $("c-meta").innerHTML =
-    `第 ${(card.stage ?? 0) + 1} / ${card.total_stages ?? 0} 阶` +
-    (card.last_notified_at ? ` · 推送于 ${formatTime(card.last_notified_at)}` : "");
-  $("c-translation").textContent = card.translation || "";
-
-  const hasExample = !!(card.example || "").trim();
-  $("c-example-wrap").classList.toggle("hidden", !hasExample);
-  $("c-example").textContent = card.example || "";
-  $("c-example-zh").textContent = card.sentence_chinese || "";
-  const collocations = card.collocations || [];
-  $("c-collocation").innerHTML = collocations
-    .map(c => `<span class="pill collocation">${escapeHtml(c)}</span>`)
-    .join("");
-
-  const def = card.definition;
-  const senses = (def && def.senses) || [];
-  $("c-def-wrap").classList.toggle("hidden", senses.length === 0);
-  $("c-defs").innerHTML = senses
-    .map(s => {
-      const en = s.definition || "";
-      const zh = s.chinese_definition || "";
-      return `<li>${escapeHtml(en)}${zh ? ` <span class="zh">— ${escapeHtml(zh)}</span>` : ""}</li>`;
-    })
-    .join("");
-
-  $("c-remaining").textContent = card.pending_count > 1 ? `还有 ${card.pending_count - 1} 个待评分` : "";
-}
-
 function escapeHtml(text) {
   return String(text ?? "").replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 }
 
+// 固定搭配：新版是 {text, chinese}（搭配 + 中文意思），老缓存是纯字符串
+function collocationHtml(list) {
+  return (list || [])
+    .map(c => {
+      const text = typeof c === "string" ? c : (c && c.text) || "";
+      const zh = typeof c === "string" ? "" : (c && c.chinese) || "";
+      if (!text) return "";
+      return `<span class="collocation-item"><span class="pill collocation">${escapeHtml(text)}</span>` +
+        (zh ? `<span class="collocation-zh">${escapeHtml(zh)}</span>` : "") +
+        `</span>`;
+    })
+    .join("");
+}
+
+// ── 会话状态（队列在页面手里，服务端不存会话） ──────────────────────
+
+let queue = [];        // [{word_id, word, early}]
+let index = 0;         // 当前是第几个（从 0 开始）
+let currentCard = null;
+
+function showState(state) {
+  $("state-idle").classList.toggle("hidden", state !== "idle");
+  $("state-active").classList.toggle("hidden", state !== "active");
+  $("state-done").classList.toggle("hidden", state !== "done");
+}
+
+async function startSession(mode) {
+  try {
+    const res = await api(`/api/review/session?mode=${encodeURIComponent(mode)}`);
+    queue = res.words || [];
+    index = 0;
+    if (res.state !== "ready" || !queue.length || !res.first_card) {
+      await showIdle();
+      return;
+    }
+    showState("active");
+    renderCard(res.first_card);
+    refreshStatus();
+  } catch (error) {
+    toast(`进入复习失败：${error.message}`);
+  }
+}
+
+async function showIdle() {
+  showState("idle");
+  try {
+    renderIdle(await api("/api/review/status"));
+  } catch (error) {
+    $("idle-text").textContent = `读取状态失败：${error.message}`;
+  }
+}
+
+function renderIdle(status) {
+  const rated = status.today_rated ?? 0;
+  let text;
+  if (!status.queue_size && status.graduated_count) {
+    text = "所有词都走完阶梯了 🎉";
+  } else if (!status.queue_size) {
+    text = "复习计划里还没有词——先用扩展的闪卡复习几个生词吧。";
+  } else if (status.due_count > 0) {
+    text = `今天还有 ${status.due_count} 个词要复习`;
+  } else if (rated > 0) {
+    text = "今天的复习已完成 ✅";
+  } else {
+    text = "现在没有到期的词。";
+  }
+  if (status.queue_size && status.next_notify_at && !(status.due_count > 0)) {
+    text += ` 下次提醒：${formatTime(status.next_notify_at)}`;
+  }
+  $("idle-text").textContent = text;
+
+  const cta = $("start-review");
+  cta.textContent = rated > 0 ? "再来一组" : "立即复习";
+  cta.disabled = !status.queue_size;
+}
+
+function renderCard(card) {
+  currentCard = card;
+
+  $("c-progress").textContent = `第 ${index + 1} / ${queue.length} 个`;
+  $("c-progress-bar").style.width = `${((index + 1) / queue.length) * 100}%`;
+  $("c-early").classList.toggle("hidden", !(queue[index] && queue[index].early));
+
+  $("c-word").textContent = card.word || "";
+
+  // 音标：英 / 美（词典没查到就整行隐藏），随单词一起居中
+  const phonetics = (card.definition && card.definition.phonetics) || {};
+  const ph = [];
+  if (phonetics.uk) ph.push(`<span class="ph">英 ${escapeHtml(phonetics.uk)}</span>`);
+  if (phonetics.us) ph.push(`<span class="ph">美 ${escapeHtml(phonetics.us)}</span>`);
+  $("c-phonetics").innerHTML = ph.join("");
+  $("c-phonetics").classList.toggle("hidden", ph.length === 0);
+
+  // 词典释义（编号 + 中文为主，英文释义弱化）；有释义就不再重复收藏时带的翻译
+  const senses = (card.definition && card.definition.senses) || [];
+  $("c-def-wrap").classList.toggle("hidden", senses.length === 0);
+  $("c-defs").innerHTML = senses
+    .map(s => {
+      const zh = s.chinese_definition || "";
+      const en = s.definition || "";
+      const primary = zh || en;
+      return `<li><span class="sense-num">${escapeHtml(s.number || "")}</span>` +
+        `<span class="sense-body">${escapeHtml(primary)}` +
+        (zh && en ? `<span class="sense-en">${escapeHtml(en)}</span>` : "") +
+        `</span></li>`;
+    })
+    .join("");
+  $("c-translation").classList.toggle("hidden", senses.length > 0);
+  $("c-translation").textContent = card.translation || "";
+
+  // 例句：预加载好的直接显示；没有就先显示收藏时缓存的，等异步生成
+  const pre = exampleCache[card.word_id];
+  const ex = pre || card;
+  const hasCached = !!(ex.example || "").trim();
+  $("c-def-block").classList.toggle("hidden", !hasCached);
+  $("c-example-wrap").classList.toggle("hidden", !hasCached);
+  $("c-example").textContent = ex.example || "";
+  $("c-example-zh").textContent = ex.sentence_chinese || "";
+  $("c-collocation").innerHTML = collocationHtml(ex.collocations);
+  ensurePrefetch();
+
+  $("c-remaining").textContent = index + 1 < queue.length ? `还有 ${queue.length - index - 1} 个` : "最后一个";
+}
+
+// ── 例句预加载 ──────────────────────────────────────────────────────
+// 切到某个词时，例句和固定搭配应该已经在了：会话开始后就按队列顺序在后台
+// 生成，保持最多 3 个请求在飞（LLM 一次约 2-3 秒，也别把免费额度打满）。
+// 生成结果同时进页面缓存和后端词条缓存，后端的 rate 返回的下一张卡片
+// 也可能直接带上例句。
+
+const exampleCache = {};   // word_id → /api/review/example 的返回
+const prefetching = new Set();
+
+function fetchExample(wordId) {
+  if (exampleCache[wordId] || prefetching.has(wordId)) return;
+  prefetching.add(wordId);
+  api("/api/review/example", {
+    method: "POST",
+    body: JSON.stringify({ word_id: wordId }),
+  })
+    .then(ex => {
+      exampleCache[wordId] = ex;
+      applyExample(ex);
+    })
+    .catch(() => { /* 例句只是加分项：失败就保持缓存/隐藏 */ })
+    .finally(() => {
+      prefetching.delete(wordId);
+      ensurePrefetch();   // 完成一个就补一个，别让管道空下来
+    });
+}
+
+function ensurePrefetch() {
+  for (const item of queue) {
+    if (prefetching.size >= 3) break;
+    fetchExample(item.word_id);
+  }
+}
+
+// 例句回来时如果正好停在这张卡上，就当场渲染（异步生成的老路径）
+function applyExample(ex) {
+  if (!currentCard || !ex || currentCard.word_id !== ex.word_id) return;
+  const has = !!(ex.example || "").trim();
+  $("c-def-block").classList.toggle("hidden", !has);
+  $("c-example-wrap").classList.toggle("hidden", !has);
+  $("c-example").textContent = ex.example || "";
+  $("c-example-zh").textContent = ex.sentence_chinese || "";
+  $("c-collocation").innerHTML = collocationHtml(ex.collocations);
+}
+
+async function rate(kind) {
+  if (!currentCard) return;
+  const nextWord = queue[index + 1];
+  try {
+    const card = await api("/api/review/rate", {
+      method: "POST",
+      body: JSON.stringify({
+        word_id: currentCard.word_id,
+        kind,
+        next_word_id: nextWord ? nextWord.word_id : null,
+      }),
+    });
+    index += 1;
+    if (card) {
+      renderCard(card);
+    } else {
+      // 返回空：要么是最后一个，要么是下一个词已经不在了（被删）——接着往下试
+      await advance();
+    }
+    refreshStatus();
+  } catch (error) {
+    toast(`评分失败：${error.message}`);
+  }
+}
+
+async function advance() {
+  while (index < queue.length) {
+    try {
+      const card = await api(`/api/review/card?word_id=${encodeURIComponent(queue[index].word_id)}`);
+      if (card) {
+        renderCard(card);
+        return;
+      }
+    } catch { /* 跳过取不到卡片的词 */ }
+    index += 1;
+  }
+  renderDone();
+}
+
+function renderDone() {
+  showState("done");
+  $("done-text").textContent = `完成！本次复习了 ${queue.length} 个词`;
+  refreshStatus();
+}
+
+// ── 状态与配置 ──────────────────────────────────────────────────────
+
 function renderStatus(status) {
+  $("s-due").textContent = status.due_count ?? 0;
+  $("s-rated").textContent = status.today_rated ?? 0;
   $("s-queue").textContent = status.queue_size ?? 0;
-  $("s-today").textContent = status.today_count ?? 0;
-  $("s-pending").textContent = status.pending_count ?? 0;
-  $("s-graduated").textContent = status.graduated_count ?? 0;
-  $("s-next").textContent = status.next_due_at ? formatTime(status.next_due_at) : "—";
+  $("s-next").textContent = status.next_notify_at ? formatTime(status.next_notify_at) : "—";
 
   const notes = [];
   if (!status.notification_available) {
     notes.push("当前环境无法发送 Windows 通知（需要 Windows + windows-toasts）。");
   }
-  if (status.last_sync_at) {
-    notes.push(`上次同步：${formatTime(status.last_sync_at)}`);
+  if (status.today_notified_at) {
+    notes.push(`今天 ${formatTime(status.today_notified_at)} 已提醒 ${status.today_notified} 个词`);
+  } else if (status.today_notified > 0) {
+    notes.push(`今天已提醒 ${status.today_notified} 个词`);
   }
   $("s-note").textContent = notes.join(" ");
 
   const cfg = status.config || {};
   $("enabled").checked = !!cfg.enabled;
   $("max-per-day").value = cfg.max_per_day ?? 8;
-  $("max-per-word").value = cfg.max_per_word_per_day ?? 3;
   $("graduated").value = cfg.graduated_action ?? "stop";
   const qh = cfg.quiet_hours || {};
   $("qh-enabled").checked = !!qh.enabled;
@@ -325,7 +693,6 @@ function renderStatus(status) {
   $("llm-base").value = (cfg.llm && cfg.llm.base_url) || "";
   $("llm-key").value = (cfg.llm && cfg.llm.api_key) || "";
   $("llm-model").value = (cfg.llm && cfg.llm.model) || "";
-  $("open-url").value = cfg.open_url_template ?? "";
 }
 
 async function refreshStatus() {
@@ -336,28 +703,7 @@ async function refreshStatus() {
   }
 }
 
-async function loadCard(wordId) {
-  try {
-    const query = wordId ? `?word_id=${encodeURIComponent(wordId)}` : "";
-    renderCard(await api(`/api/review/card${query}`));
-  } catch (error) {
-    toast(`加载卡片失败：${error.message}`);
-  }
-}
-
-async function rate(kind) {
-  if (!currentCard) return;
-  try {
-    const next = await api("/api/review/rate", {
-      method: "POST",
-      body: JSON.stringify({ word_id: currentCard.word_id, kind }),
-    });
-    renderCard(next);
-    refreshStatus();
-  } catch (error) {
-    toast(`评分失败：${error.message}`);
-  }
-}
+// ── 事件绑定 ────────────────────────────────────────────────────────
 
 $("rate-remembered").addEventListener("click", () => rate("remembered"));
 $("rate-forgotten").addEventListener("click", () => rate("forgotten"));
@@ -373,55 +719,12 @@ $("speak").addEventListener("click", () => {
   window.speechSynthesis.speak(utter);
 });
 
-$("sync").addEventListener("click", async () => {
-  try {
-    const result = await api("/api/review/sync", { method: "POST" });
-    toast(`已同步：新增 ${result.added}，移除 ${result.removed}`);
-    refreshStatus();
-  } catch (error) {
-    toast(`同步失败：${error.message}`);
-  }
-});
+$("start-review").addEventListener("click", () => startSession("manual"));
+$("again-review").addEventListener("click", () => startSession("manual"));
 
-$("tick").addEventListener("click", async () => {
-  try {
-    const result = await api("/api/review/tick", { method: "POST" });
-    const reasons = {
-      disabled: "复习提醒未开启",
-      quietHours: "免打扰时段内",
-      dailyCap: "今天的推送额度用完了",
-      perWordCap: "这些词今天的额度用完了",
-      nothingDue: "暂时没有到期的词",
-    };
-    if (result.pushed) toast(`已推送 ${result.pushed} 条提醒`);
-    else if (result.failed) toast(`推送失败 ${result.failed} 条`);
-    else toast(reasons[result.stopped_because] || "没有推送任何提醒");
-    refreshStatus();
-    loadCard();
-  } catch (error) {
-    toast(`推送失败：${error.message}`);
-  }
-});
-
-$("test-notify").addEventListener("click", async () => {
-  try {
-    const result = await api("/api/review/notify-test", { method: "POST" });
-    toast(`测试通知已发送（点击会打开 ${result.open_url}）`);
-  } catch (error) {
-    toast(`测试通知失败：${error.message}`);
-  }
-});
-
-$("clear").addEventListener("click", async () => {
-  if (!confirm("确定清空复习队列吗？生词本不会受影响。")) return;
-  try {
-    await api("/api/review/queue", { method: "DELETE" });
-    toast("复习队列已清空");
-    refreshStatus();
-    loadCard();
-  } catch (error) {
-    toast(`清空失败：${error.message}`);
-  }
+$("quit-review").addEventListener("click", () => {
+  currentCard = null;
+  showIdle();
 });
 
 $("save").addEventListener("click", async () => {
@@ -429,14 +732,12 @@ $("save").addEventListener("click", async () => {
     enabled: $("enabled").checked,
     generate_example: $("generate-example").checked,
     max_per_day: Number($("max-per-day").value || 8),
-    max_per_word_per_day: Number($("max-per-word").value || 3),
     graduated_action: $("graduated").value,
     quiet_hours: {
       enabled: $("qh-enabled").checked,
       start: $("qh-start").value || "23:00",
       end: $("qh-end").value || "08:00",
     },
-    open_url_template: $("open-url").value.trim(),
     llm: {
       base_url: $("llm-base").value.trim(),
       api_key: $("llm-key").value.trim(),
@@ -457,8 +758,43 @@ $("enabled").addEventListener("change", () => {
   $("save").click();
 });
 
+// ── 设置弹层（右上角齿轮） ──────────────────────────────────────────
+
+const settingsDialog = $("settings-dialog");
+$("settings-gear").addEventListener("click", () => {
+  if (typeof settingsDialog.showModal === "function") {
+    settingsDialog.showModal();
+  } else {
+    settingsDialog.setAttribute("open", "");
+  }
+});
+$("settings-close").addEventListener("click", () => settingsDialog.close());
+// 点背板（点击落在 dialog 自身上）时关闭
+settingsDialog.addEventListener("click", event => {
+  if (event.target === settingsDialog) settingsDialog.close();
+});
+
+// ── 入口 ────────────────────────────────────────────────────────────
+
 const params = new URLSearchParams(location.search);
-loadCard(params.get("word"));
+const deepLinkWord = params.get("word");
+if (deepLinkWord) {
+  // 旧通知/深链带来的单个词：按一张卡的会话处理
+  queue = [{ word_id: deepLinkWord, word: "", early: false }];
+  index = 0;
+  api(`/api/review/card?word_id=${encodeURIComponent(deepLinkWord)}`)
+    .then(card => {
+      if (card) {
+        showState("active");
+        renderCard(card);
+      } else {
+        showIdle();
+      }
+    })
+    .catch(() => showIdle());
+} else {
+  startSession("auto");
+}
 refreshStatus();
 </script>
 </body>
