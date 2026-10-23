@@ -480,6 +480,9 @@ async function startSession(mode) {
     queue = res.words || [];
     index = 0;
     if (res.state !== "ready" || !queue.length || !res.first_card) {
+      // 一组都凑不出来时把原因讲清楚：静默跳回空闲页的话，用户点了按钮
+      // 看页面原样弹回来，只会以为按钮坏了。
+      toast(emptySessionText(res));
       await showIdle();
       return;
     }
@@ -488,6 +491,18 @@ async function startSession(mode) {
     refreshStatus();
   } catch (error) {
     toast(`进入复习失败：${error.message}`);
+  }
+}
+
+// 会话建不起来的原因（后端 empty_reason）翻成一句人话
+function emptySessionText(res) {
+  switch (res.empty_reason) {
+    case "noWords":
+      return "复习计划里还没有词，先用扩展的闪卡复习几个生词吧。";
+    case "allGraduated":
+      return "所有词都走完阶梯了 🎉";
+    default:
+      return "现在的词都复习完了，歇一会儿 ☕";
   }
 }
 

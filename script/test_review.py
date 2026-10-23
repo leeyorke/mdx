@@ -12,7 +12,8 @@
 8. 队列同步（只收「复习过一次」的生词）
 9. 一轮调度：每日一次批量提醒、每日配额、免打扰只挡通知、当天不重复提醒、
    失败退避
-10. 复习会话：auto 受剩余额度限制、manual 不受限 + 提前复习补齐
+10. 复习会话：auto 受剩余额度限制、manual 不受限 + 提前复习补齐（含今天全复习完
+    时 manual 仍凑得出一组，「再来一组」不空转）
 11. 评分（记得 / 忘了，带 next_word_id）与例句按需生成（含固定搭配的中文意思）
 12. LLM 请求头（OpenRouter 归属头）、代理环境变量与 NO_PROXY 坑、REST 接口与复习页面（no-cache + 例句预加载）
 
@@ -922,6 +923,51 @@ def test_session() -> None:
                 manual,
             )
 
+    # ── 场景五：今天全复习完了，manual 靠即将到期补齐（「再来一组」不能空转）
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            _add_reviewed("serendipity", "n. 意外发现珍奇事物的运气")
+            _add_reviewed("luminate", "v. 发亮")
+            service.sync_review_queue()
+
+            # 全队今天都评过分、且都改成稍后到期：模拟晚上再点「再来一组」
+            due_at = {
+                "monetization": NOW + 50 * 60 * 1000,
+                "serendipity": NOW + 30 * 60 * 1000,
+                "luminate": NOW + 40 * 60 * 1000,
+            }
+            entries = list(store.load_schedule().values())
+            for entry in entries:
+                entry["last_rated_at"] = NOW
+                entry["next_due_at"] = due_at[entry["word"]]
+            store.upsert_schedule_entries(entries)
+
+            auto = service.build_session("auto", now=NOW)
+            check(
+                "今天全复习完 → auto 为空",
+                auto["state"] == "empty" and auto["empty_reason"] == "nothingDue",
+                auto,
+            )
+            manual = service.build_session("manual", now=NOW)
+            check(
+                "manual 仍能凑出一组（提前复习）",
+                manual["state"] == "ready" and len(manual["words"]) == 3,
+                manual,
+            )
+            check(
+                "补齐的词都打提前复习标记",
+                all(w["early"] for w in manual["words"]),
+                manual,
+            )
+            check(
+                "提前复习取最快到期的一批",
+                [w["word"] for w in manual["words"]]
+                == ["serendipity", "luminate", "monetization"],
+                manual,
+            )
+
     # ── 场景四：两种空态 ──────────────────────────────────────────────
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "review.db"
@@ -1384,6 +1430,28 @@ def test_api() -> None:
             resp = client.get("/api/review/session?mode=bogus")
             check("非法会话模式被拒绝", resp.status_code == 422, resp.text[:200])
 
+            # 全队的词今天都复习过了：auto 空了，manual 仍要凑得出一组
+            # （「再来一组」点了没反应的回归）
+            today_start = schedule.get_start_of_day_ms(service._now_ms())
+            entries = list(store.load_schedule().values())
+            for entry in entries:
+                entry["last_rated_at"] = today_start
+                entry["next_due_at"] = today_start + 24 * 60 * 60 * 1000
+            store.upsert_schedule_entries(entries)
+            auto = client.get("/api/review/session?mode=auto").json()
+            check("今天全复习完 → auto 会话为空", auto["state"] == "empty", auto)
+            manual = client.get("/api/review/session?mode=manual").json()
+            check(
+                "今天全复习完 → manual 仍凑得出一组",
+                manual["state"] == "ready" and bool(manual["words"]),
+                manual,
+            )
+            check(
+                "HTTP 层补进来的词都打提前复习标记",
+                all(w["early"] for w in manual["words"]),
+                manual,
+            )
+
             resp = client.get("/api/review/card")
             check("卡片接口可用（无卡片时返回 null）", resp.status_code == 200)
 
@@ -1406,6 +1474,7 @@ def test_api() -> None:
             check("页面里有复习卡片", "rate-remembered" in page)
             check("页面渲染搭配的中文意思", "collocation-zh" in page)
             check("页面预加载后面卡片的例句", "ensurePrefetch" in page)
+            check("空会话时页面说明原因", "emptySessionText" in page)
             check("页面里有设置齿轮", "settings-gear" in page)
             check("页面里有设置弹层", "settings-dialog" in page)
             check("页面里还有开启开关", "开启复习提醒" in page)

@@ -387,7 +387,10 @@ def _compose_session(
     - ``auto``（通知点进来 / 打开页面）：上次提醒还没评分的词 + 今天到期
       且今天没复习过的词，受今天剩余额度限制——"今天要复习的量"；
     - ``manual``（「立即复习」）：同样这两类，但**不受额度与免打扰限制**；
-      不足一天配额时用即将到期的词补齐，补齐的打 ``early`` 标记。
+      不足一天配额时用即将到期的词补齐，补齐的打 ``early`` 标记；连"即将
+      到期"都没有（全队的词今天都复习过了）时，也允许把今天复习过的词按
+      最快到期补进来——手动会话本来就是"我想现在再练一组"，否则晚上再点
+      「再来一组」只会空转。
 
     队列由页面自己拿着走，服务端不存会话状态：刷新页面、开两个标签页都
     不会把队列走丢或串台。
@@ -416,13 +419,26 @@ def _compose_session(
     if mode == "manual":
         chosen = pending + due
         if len(chosen) < max_per_day:
+            excluded = {entry["word_id"] for entry in chosen}
+            # 先补「还没到期、今天也没复习过」的词：提前复习，"一天一轮"照旧优先
             fill = pick_upcoming_entries(
                 schedule,
                 now,
                 max_per_day - len(chosen),
                 day_start_ms=day_start,
-                exclude_ids={entry["word_id"] for entry in chosen},
+                exclude_ids=excluded,
             )
+            if not fill:
+                # 全队的词今天都复习过了（晚上再点「再来一组」的常态）：手动
+                # 会话不受"一天一轮"限制，否则凑不出任何一组，按钮点了只会
+                # 原样弹回空闲页，看着像坏了。取最快到期的那批，照打 early 标。
+                fill = pick_upcoming_entries(
+                    schedule,
+                    now,
+                    max_per_day - len(chosen),
+                    day_start_ms=None,
+                    exclude_ids=excluded,
+                )
             early_ids = {entry["word_id"] for entry in fill}
             chosen += fill
     else:
