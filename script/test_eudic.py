@@ -394,7 +394,7 @@ def test_upsert_rules() -> None:
         check("评过分的词保留本地星级", record["star"] == 5, record["star"])
 
         # 认领同名本地词
-        local = vocabulary.add_word("Lucid", "adj. 清晰")
+        local, _created = vocabulary.add_word("Lucid", "adj. 清晰")
         result = vocabulary.upsert_eudic_words([_row("lucid", translation="adj. 清楚")])
         words, total = vocabulary.list_words()
         check("同名本地词不新建重复行", total == 2, total)
@@ -574,7 +574,7 @@ def test_api() -> None:
             check("删除确实调了欧路", any(c["url"].endswith("/words") for c in fake.calls), fake.paths())
 
             # 欧路失败时，本地照样成功
-            eudic_word = vocabulary.add_word("ephemeral2", "adj. 稍纵即逝的")
+            eudic_word, _created = vocabulary.add_word("ephemeral2", "adj. 稍纵即逝的")
             vocabulary.set_word_source(
                 eudic_word["id"], "eudic", "0:ephemeral2", "0"
             )

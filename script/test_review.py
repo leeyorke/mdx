@@ -558,13 +558,13 @@ def _make_vocabulary(db_path: Path) -> None:
     """造一份生词库：一个复习过的、一个没复习的。"""
     vocabulary.DB_FILE = db_path
     vocabulary.add_word("ephemeral", "adj. 短暂的")
-    reviewed = vocabulary.add_word("monetization", "货币化")
+    reviewed, _created = vocabulary.add_word("monetization", "货币化")
     vocabulary.review_word(reviewed["id"])
 
 
 def _add_reviewed(word: str, translation: str) -> str:
     """再加一个「复习过一次」的生词，返回它的 ID。"""
-    record = vocabulary.add_word(word, translation)
+    record, _created = vocabulary.add_word(word, translation)
     vocabulary.review_word(record["id"])
     return record["id"]
 

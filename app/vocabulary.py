@@ -124,29 +124,49 @@ def add_word(
     source_id: Optional[str] = None,
     source_category: Optional[str] = None,
     phonetic: Optional[str] = None,
-) -> dict:
-    """添加生词，返回完整记录"""
-    now = int(datetime.now(timezone.utc).timestamp() * 1000)
-    record = {
-        "id": str(uuid.uuid4()),
-        "word": word,
-        "translation": translation,
-        "context_url": context_url,
-        "context_text": context_text,
-        "source_language": source_language,
-        "target_language": target_language,
-        "star": 1,
-        "created_at": now,
-        "last_reviewed_at": None,
-        "review_count": 0,
-        "note": note,
-        "source": source,
-        "source_id": source_id,
-        "source_category": source_category,
-        "phonetic": phonetic,
-    }
+) -> tuple[dict, bool]:
+    """添加生词，返回 ``(记录, 是否新建)``。
 
+    **查重（大小写不敏感，全表）**：生词本里已有同一个词时不再 INSERT，
+    原样返回已有记录并标记 ``created=False``——收藏按钮重复点、扩展与
+    GoldenDict 同时写同一个词，都只应留下一条。语义与
+    ``upsert_eudic_words`` 的「同名认领」、GoldenDict 监听那一侧的去重
+    （``_existing_words``）一致：``Hello`` 与 ``hello`` 算同一个词。
+
+    已有记录**一个字段都不动**：不刷新 ``created_at``（否则「按添加时间
+    排序」被打乱）、也不用新译文覆盖旧译文。欧路词（``source='eudic'``）
+    同样算「已有」——它们就在同一个列表里展示，重复收藏没有意义。
+    """
     with _get_conn() as conn:
+        existing = conn.execute(
+            """
+            SELECT * FROM vocabulary_words
+            WHERE lower(trim(word)) = lower(trim(?))
+            """,
+            (word,),
+        ).fetchone()
+        if existing is not None:
+            return dict(existing), False
+
+        now = int(datetime.now(timezone.utc).timestamp() * 1000)
+        record = {
+            "id": str(uuid.uuid4()),
+            "word": word,
+            "translation": translation,
+            "context_url": context_url,
+            "context_text": context_text,
+            "source_language": source_language,
+            "target_language": target_language,
+            "star": 1,
+            "created_at": now,
+            "last_reviewed_at": None,
+            "review_count": 0,
+            "note": note,
+            "source": source,
+            "source_id": source_id,
+            "source_category": source_category,
+            "phonetic": phonetic,
+        }
         conn.execute(
             """
             INSERT INTO vocabulary_words
@@ -163,7 +183,7 @@ def add_word(
             record,
         )
         conn.commit()
-    return record
+    return record, True
 
 
 def get_word(word_id: str) -> Optional[dict]:

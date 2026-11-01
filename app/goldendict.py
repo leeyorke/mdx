@@ -411,10 +411,14 @@ class LocalVocabularyWriter:
 
     def add(self, word: str, translation: str, note: str) -> bool:
         try:
-            add_word(word=word, translation=translation, note=note)
+            _record, created = add_word(word=word, translation=translation, note=note)
         except Exception as e:
             log.error("写入生词本失败 %s: %s", word, e)
             return False
+        if not created:
+            # watcher 同步前已经按生词本去过重（_existing_words），走到这里
+            # 说明是并发写入撞车：词已经在了，不重复添加即视为成功。
+            log.info("生词本已有 %s，跳过重复添加", word)
         return True
 
     def close(self) -> None:

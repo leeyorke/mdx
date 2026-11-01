@@ -229,7 +229,9 @@
 
 ### `POST /api/vocabulary`
 
-> 添加生词。
+> 添加生词。**生词本已有时（大小写不敏感，全表）不重复添加**：返回已有记录，
+> 响应带 `duplicate: true`，不会插入第二行，也不会刷新 `created_at`。首次添加
+> 才走欧路推送（`eudic_sync`）。
 
 **请求体**
 
@@ -260,7 +262,8 @@
   "created_at": 1748832000000,
   "last_reviewed_at": null,
   "review_count": 0,
-  "note": "test"
+  "note": "test",
+  "duplicate": false
 }
 ```
 

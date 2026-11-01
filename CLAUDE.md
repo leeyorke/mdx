@@ -21,8 +21,9 @@ uv run python -X utf8 -m uvicorn app.main:app --host 0.0.0.0 --port 4080
 # 安装/同步依赖（改了 pyproject.toml 之后）
 uv sync
 
-# 测试（三个纯脚本，各自独立运行，无 pytest）
+# 测试（四个纯脚本，各自独立运行，无 pytest）
 uv run python -X utf8 script/test_goldendict.py
+uv run python -X utf8 script/test_vocabulary.py
 uv run python -X utf8 script/test_review.py
 uv run python -X utf8 script/test_eudic.py
 
@@ -82,7 +83,7 @@ review.md / eudic.md），**改行为前先读对应文档，文档与代码同�
 app/
   main.py          # FastAPI 入口：路由 + lifespan + Pydantic schemas（大量 OpenAPI 注解）
   dictionary.py    # 词典查询：SQLite 查 entry → 解析词条 HTML → 结构化 JSON
-  vocabulary.py    # 生词本数据层：vocabulary_words CRUD + 欧路列迁移 + 合并 upsert
+  vocabulary.py    # 生词本数据层：vocabulary_words CRUD（add_word 大小写不敏感查重）+ 欧路列迁移 + 合并 upsert
   goldendict.py    # 文件监听 + 单词提取 + 去重 + 翻译格式化 + 单实例锁
   eudic.py         # 欧路 OpenAPI 客户端（TLS/重试/代理/清洗/同步/写回）+ 配置存储
   eudic_api.py     # 欧路 REST 路由
@@ -103,6 +104,12 @@ app/
 - **生词本是唯一数据源，其他功能都向它对齐**。欧路词以 `source='eudic'` 落进
   同一张 `vocabulary_words`，分页/搜索/排序/复习队列天然统一；复习队列只收
   `last_reviewed_at IS NOT NULL`（复习过一次）的词。
+- **重复收藏只在数据层挡**：`add_word` 按 `lower(trim(word))` 查全表，已有就
+  原样返回已有记录（不刷新 `created_at`、不覆盖译文、不再推欧路），路由返回
+  `duplicate: true` 让前端说「已在生词本」。扩展、GoldenDict、进程内
+  `LocalVocabularyWriter` 三个写入方都走这一个函数，前端查重挡不全另外两条，
+  也治不了并发（TOCTOU）。**别加 `lower(word)` 唯一索引**：欧路同一个词落在两
+  个分类里是两条合法记录，唯一索引会让 `upsert_eudic_words` 插第二条时炸。存量数据里有 5 组历史重复词（spark / legacy / latency / fierce / credentials，各 2 条），用户选择暂不清理——查重只对今后的写入生效。
 - **嵌入监听复用进程内数据层**：`start_embedded_watcher` 注入
   `LocalVocabularyWriter` 直接调 `app.vocabulary.add_word`（即
   `POST /api/vocabulary` 内部同一个函数），不走 HTTP；独立进程模式才走

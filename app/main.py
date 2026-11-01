@@ -189,6 +189,10 @@ class AddVocabularyWordResponse(VocabularyRecordResponse):
     eudic_sync: Optional[EudicSyncStatus] = Field(
         None, description="欧路侧同步结果（没涉及欧路时为 null）"
     )
+    duplicate: bool = Field(
+        False,
+        description="true = 生词本里已有这个词（大小写不敏感），本次没有新增记录，返回的是已有记录",
+    )
 
 
 class PatchVocabularyWordResponse(VocabularyRecordResponse):
@@ -408,7 +412,7 @@ async def search(
 @app.post(
     "/api/vocabulary",
     summary="添加生词",
-    description="将新单词添加到用户的生词本中。",
+    description="将新单词添加到用户的生词本中。生词本已有时（大小写不敏感）不重复添加，直接返回已有记录并标记 duplicate。",
     tags=["Vocabulary"],
     response_model=AddVocabularyWordResponse,
     responses={
@@ -429,7 +433,7 @@ async def search(
             },
         },
         200: {
-            "description": "创建成功",
+            "description": "创建成功（生词本已有时返回已有记录）",
             "content": {
                 "application/json": {
                     "examples": {
@@ -448,8 +452,27 @@ async def search(
                                 "last_reviewed_at": None,
                                 "review_count": 0,
                                 "note": None,
+                                "duplicate": False,
                             },
-                        }
+                        },
+                        "duplicate": {
+                            "summary": "生词本已有时（不新增记录）",
+                            "value": {
+                                "id": "550e8400-e29b-41d4-a716-446655440000",
+                                "word": "hello",
+                                "translation": "你好",
+                                "context_url": None,
+                                "context_text": None,
+                                "source_language": None,
+                                "target_language": None,
+                                "star": 3,
+                                "created_at": 1699990000000,
+                                "last_reviewed_at": None,
+                                "review_count": 2,
+                                "note": None,
+                                "duplicate": True,
+                            },
+                        },
                     },
                 }
             },
@@ -459,8 +482,8 @@ async def search(
 async def create_vocabulary(
     payload: AddVocabularyWordPayload = Body(..., description="生词信息"),
 ):
-    """添加生词到生词本"""
-    record = add_word(
+    """添加生词到生词本（重复收藏不新增记录）"""
+    record, created = add_word(
         word=payload.word,
         translation=payload.translation,
         context_url=payload.context_url,
@@ -469,6 +492,12 @@ async def create_vocabulary(
         target_language=payload.target_language,
         note=payload.note,
     )
+
+    if not created:
+        # 生词本里已有这个词：不再插一条，也不再推欧路——首次收藏时已经
+        # 推过（欧路侧 POST /studylist/word 本身是 upsert，重复推只会
+        # 刷新它的 add_time，没有意义）。
+        return {**record, "duplicate": True}
 
     eudic_sync = None
     if eudic.sync_new_words_enabled():
@@ -492,7 +521,7 @@ async def create_vocabulary(
             log.warning("同步到欧路失败：%s", exc)
             eudic_sync = {"ok": False, "error": str(exc)}
 
-    return {**record, "eudic_sync": eudic_sync}
+    return {**record, "duplicate": False, "eudic_sync": eudic_sync}
 
 
 @app.get(
