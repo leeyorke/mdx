@@ -274,7 +274,13 @@ def _grade_via_llm(
         text=text,
         types=", ".join(WRITING_CORRECTION_TYPES),
     )
-    raw = llm_client.chat(config, system=_SYSTEM_PROMPT, user=prompt, temperature=0.2)
+    raw = llm_client.chat(
+        config,
+        system=_SYSTEM_PROMPT,
+        user=prompt,
+        temperature=0.2,
+        timeout=llm_client.WRITING_GRADE_TIMEOUT_SECONDS,
+    )
     if raw is None:
         return None
     parsed = llm_client.parse_json_payload(raw)

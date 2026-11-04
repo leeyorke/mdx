@@ -32,9 +32,18 @@ from app.review.constants import (
 
 log = logging.getLogger("app.review.llm_client")
 
-#: 调用 LLM 的超时时间（秒）。评卷要读一篇短文再逐条批改，比重写一句例句慢，
-#: 但太长会让检验页面的「发送给 LLM 评卷」按钮转圈转到用户以为坏了——统一 20s。
+#: 例句生成的超时时间（秒）。例句只重写一句话，正常几秒就回，20s 已很宽裕。
+#: 评卷用的是下面单独的 ``WRITING_GRADE_TIMEOUT_SECONDS``，不走这个值。
 LLM_TIMEOUT_SECONDS = 20.0
+
+#: 写作评卷的超时时间（秒）。评卷要让模型读一篇短文、逐词判覆盖、逐句挑语法错——
+#: 输出一坨结构化 JSON。实测当前推理型端点（要憋内部推理）单次耗时剧烈波动：
+#: 112s / 145s / 146s / 172s 都出现过，20s 必超时（表现为「本次调用失败，仅用词
+#: 覆盖统计」），90s / 200s 也仍会偶发超。慢的是模型「只输出 JSON」时的内部推理
+#: 本身——砍掉润色稿等输出块几乎不提速（146s vs 145s），所以只能靠拉长超时硬扛。
+#: 给到 300s 覆盖观测到的最慢值。评卷在线程池里跑、不占事件循环，不会拖垮其它
+#: 请求；代价是这次评卷页面要转圈两三分钟。要快就换一个非推理型 / 更快的评卷端点。
+WRITING_GRADE_TIMEOUT_SECONDS = 300.0
 
 #: 从模型输出里捞 JSON 对象的兜底正则：模型偶尔会无视「只输出 JSON」的要求，
 #: 在前后裹上说明文字。先整段解析，失败再退到「抓第一个 {...}」。
@@ -115,6 +124,7 @@ def chat(
     system: str,
     user: str,
     temperature: float = 0.2,
+    timeout: float = LLM_TIMEOUT_SECONDS,
 ) -> Optional[str]:
     """调一次 OpenAI 兼容 ``/chat/completions``，返回 assistant 文本。
 
@@ -127,6 +137,10 @@ def chat(
 
     不校验业务语义——文本拿到就返回，解析交给调用方（例句要例句对象，评卷
     要分数与批改数组，各自用 :func:`parse_json_payload` 兜底）。
+
+    ``timeout`` 让调用方按请求重量自定：例句只生成一句话，默认 20s 足够；
+    评卷要读一篇短文再吐一大坨结构化 JSON，慢端点（推理型模型憋内部推理）
+    能跑到 45–65s，得单独放宽，否则永远卡在「本次调用失败」。
     """
     base_url, api_key, model = llm_config(config)
     if not (base_url and model):
@@ -145,7 +159,7 @@ def chat(
 
     try:
         with httpx.Client(
-            timeout=LLM_TIMEOUT_SECONDS,
+            timeout=timeout,
             trust_env=False,  # 别让 httpx 自己解析代理/NO_PROXY（见上）
             **({"proxy": proxy} if proxy else {}),
         ) as client:
