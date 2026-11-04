@@ -9,27 +9,21 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import re
 from typing import Any, Mapping, Optional
 
-import httpx
+# ``httpx`` 从公共客户端 re-export：既有例句单测把 ``app.review.example.httpx``
+# 当 mock 目标，而真正发请求的地方已经搬到 ``llm_client``——两边引用同一个模块
+# 对象，mock 才拦得住。别改成 ``import httpx``，否则测试会去打真的网络。
+import httpx  # noqa: F401
 
+from app.review import llm_client
 from app.review.constants import (
     EXAMPLE_COLLOCATION_LIMIT,
-    EXAMPLE_LLM_TIMEOUT_SECONDS,
-    OPENROUTER_HOST,
-    OPENROUTER_REFERER,
-    OPENROUTER_TITLE,
     REVIEW_EXAMPLE_ANGLES,
 )
 
 log = logging.getLogger("app.review.example")
-
-#: 记录上一个推送用过的角度，避免连续两次用同一个场景。
-_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 _SYSTEM_PROMPT = (
     "You are an English teacher helping a Chinese learner build vocabulary. "
@@ -63,35 +57,13 @@ Rules:
 """
 
 
-def _strip_code_fence(text: str) -> str:
-    """去掉模型可能裹上的 ```json 围栏。"""
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
-        cleaned = re.sub(r"```\s*$", "", cleaned)
-    return cleaned.strip()
-
-
 def parse_llm_payload(raw: str) -> Optional[dict[str, Any]]:
-    """从模型输出里解析 JSON；解析不了就返回 ``None``。"""
-    if not raw:
-        return None
+    """从模型输出里解析 JSON；解析不了就返回 ``None``。
 
-    candidate = _strip_code_fence(raw)
-    try:
-        parsed = json.loads(candidate)
-    except (TypeError, ValueError):
-        match = _JSON_BLOCK_RE.search(candidate)
-        if not match:
-            return None
-        try:
-            parsed = json.loads(match.group(0))
-        except (TypeError, ValueError):
-            return None
-
-    if not isinstance(parsed, dict):
-        return None
-    return parsed
+    解析逻辑（剥围栏、兜底抓 JSON 块）在 :mod:`app.review.llm_client`，例句与
+    写作评卷共用。保留这个旧名字，既有例句单测引用的是它。
+    """
+    return llm_client.parse_json_payload(raw)
 
 
 def pick_angle(push_count: int) -> str:
@@ -127,50 +99,30 @@ def normalize_collocations(raw: Any) -> list[dict[str, str]]:
 
 
 def _llm_config(config: Mapping[str, Any]) -> tuple[str, str, str]:
-    llm = config.get("llm") or {}
-    return (
-        str(llm.get("base_url") or "").strip(),
-        str(llm.get("api_key") or "").strip(),
-        str(llm.get("model") or "").strip(),
-    )
+    """取 ``(base_url, api_key, model)``——委托给公共客户端。"""
+    return llm_client.llm_config(config)
 
 
 def _llm_headers(api_key: str, base_url: str) -> dict[str, str]:
-    """LLM 请求头。
+    """LLM 请求头——委托给公共客户端。
 
     请求 OpenRouter 时额外带上 ``HTTP-Referer`` / ``X-Title`` 两个归属头
     （官方推荐，用于在 OpenRouter 后台展示调用来源）；其他提供商不认识
     这两个头，就不带。
     """
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    if OPENROUTER_HOST in base_url.lower():
-        headers["HTTP-Referer"] = OPENROUTER_REFERER
-        headers["X-Title"] = OPENROUTER_TITLE
-    return headers
+    return llm_client._llm_headers(api_key, base_url)
 
 
 #: 代理从标准环境变量读，但**不用 httpx 自己的解析**：它的 NO_PROXY 解析
 #: 碰到 ``[::1]`` 这种带方括号的 IPv6 会抛 ``InvalidURL: Invalid port``——
 #: 不是请求失败，是 Client 都构造不出来，请求根本发不出去（``app/eudic.py``
 #: 里有同一个坑的长注释）。自己取出 URL 直接塞给 ``proxy=`` 参数绕开。
-PROXY_ENV_NAMES = (
-    "MDX_LLM_PROXY",
-    "HTTPS_PROXY",
-    "https_proxy",
-    "HTTP_PROXY",
-    "http_proxy",
-)
+PROXY_ENV_NAMES = llm_client.PROXY_ENV_NAMES
 
 
 def _resolve_proxy() -> Optional[str]:
     """从环境变量里取代理地址，没有就返回 None（直连）。"""
-    for name in PROXY_ENV_NAMES:
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value
-    return None
+    return llm_client.resolve_proxy()
 
 
 def _request_example(
@@ -179,47 +131,19 @@ def _request_example(
     model: str,
     prompt: str,
 ) -> Optional[dict[str, Any]]:
-    """调用 OpenAI 兼容接口拿例句。"""
-    endpoint = base_url.rstrip("/")
-    if not endpoint.endswith("/chat/completions"):
-        endpoint = f"{endpoint}/chat/completions"
+    """调用 OpenAI 兼容接口拿例句。
 
-    headers = _llm_headers(api_key, base_url)
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.9,
-    }
-
-    # trust_env=False + 自己解析代理：httpx 默认会读 NO_PROXY 环境变量，而这台
-    # 机器的 NO_PROXY 里带方括号 IPv6（``[::1]``），构造 Client 时直接抛
-    # InvalidURL，例句请求永远发不出去。
-    proxy = _resolve_proxy()
-
-    try:
-        with httpx.Client(
-            timeout=EXAMPLE_LLM_TIMEOUT_SECONDS,
-            trust_env=False,
-            **({"proxy": proxy} if proxy else {}),
-        ) as client:
-            response = client.post(endpoint, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-    except Exception as exc:  # noqa: BLE001 —— LLM 挂了不能影响推送
-        log.warning("调用 LLM 生成例句失败：%s", exc)
+    传输（代理、归属头、超时、异常兜底）全在 :mod:`app.review.llm_client`，
+    这里只负责例句自己的 prompt 形状与解析。保留了原函数签名，既有的例句
+    单测（mock ``example.httpx.Client``）不用改一行——``example.httpx`` 与
+    ``llm_client.httpx`` 是同一个模块对象，mock 照样拦得住真正发请求的地方。
+    """
+    config = {"llm": {"base_url": base_url, "api_key": api_key, "model": model}}
+    content = llm_client.chat(config, system=_SYSTEM_PROMPT, user=prompt, temperature=0.9)
+    if content is None:
         return None
-
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        log.warning("LLM 返回结构异常，无法取到例句")
-        return None
-
     return parse_llm_payload(content)
+
 
 
 def build_example(

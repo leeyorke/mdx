@@ -21,10 +21,11 @@ uv run python -X utf8 -m uvicorn app.main:app --host 0.0.0.0 --port 4080
 # 安装/同步依赖（改了 pyproject.toml 之后）
 uv sync
 
-# 测试（四个纯脚本，各自独立运行，无 pytest）
+# 测试（五个纯脚本，各自独立运行，无 pytest）
 uv run python -X utf8 script/test_goldendict.py
 uv run python -X utf8 script/test_vocabulary.py
 uv run python -X utf8 script/test_review.py
+uv run python -X utf8 script/test_writing.py
 uv run python -X utf8 script/test_eudic.py
 
 # GoldenDict 独立同步（首次导入 / 调试用，不受免打扰限制）
@@ -44,8 +45,8 @@ data/install_task.log  # 自启安装/卸载日志
 ```
 
 接口交互文档是 FastAPI 自动生成的 `http://127.0.0.1:4080/docs`（Swagger UI）；
-各模块的设计说明见 `docs/` 下四份文档（api.md / goldendict-watcher.md /
-review.md / eudic.md），**改行为前先读对应文档，文档与代码同等权威**。
+各模块的设计说明见 `docs/` 下五份文档（api.md / goldendict-watcher.md /
+review.md / writing.md / eudic.md），**改行为前先读对应文档，文档与代码同等权威**。
 
 ## 数据层：SQLite 库（全部被 .gitignore，不入库）
 
@@ -54,7 +55,7 @@ review.md / eudic.md），**改行为前先读对应文档，文档与代码同�
 | 库文件 | 内容 | 读写模块 |
 |--------|------|----------|
 | `oaldpe.db` | 词典本体：`mdx(entry, paraphrase)`，paraphrase 是 OALD 词条的 HTML | `app/dictionary.py` |
-| `user.db` | `vocabulary_words`（生词本）、`review_schedule` / `review_stats` / `review_settings`（复习）、`eudic_settings`（欧路配置） | `app/vocabulary.py`、`app/review/store.py`、`app/eudic.py` |
+| `user.db` | `vocabulary_words`（生词本）、`review_schedule` / `review_stats` / `review_settings`（复习）、`review_writing_tasks` / `review_writing_submissions` / `review_writing_notes`（写作评卷）、`eudic_settings`（欧路配置） | `app/vocabulary.py`、`app/review/store.py`、`app/review/writing_store.py`、`app/eudic.py` |
 | `ngsl.db` | NGSL 词频表（`ngsl_words`），暂无业务代码引用 | — |
 | `oxford.db` | 另一版牛津词典（配 `oxford.mdx`），应用代码未引用，只有 README 里的转换命令提到 | — |
 
@@ -95,8 +96,12 @@ app/
     scheduler.py   # 常驻循环（asyncio task）
     notifier.py    # windows-toasts 通知（每日一次批量），launch 协议激活地址
     example.py     # 可选 LLM 造句，失败逐级降级（按需生成，不阻塞调度）
-    api.py         # /api/review/* 路由 + /review 页面
+    llm_client.py  # OpenAI 兼容 LLM 传输层（例句与写作评卷共用；任何失败返回 None）
+    writing.py     # 复习成果检验：组装检验 / LLM 评卷 / 用词覆盖匹配 / 草稿与笔记
+    writing_store.py  # 写作三张表的落库（与复习队列同库 user.db，独立表）
+    api.py         # /api/review/* 路由 + /review 与 /verify 页面
     static/review.html  # 单文件会话式复习+配置页
+    static/verify.html  # 复习成果检验页（写作 + 评卷 + 笔记）
 ```
 
 ### 关键设计决策（改代码前必须知道）
@@ -153,6 +158,11 @@ app/
 4. **欧路同步**：`POST /api/eudic/sync` → 翻页拉全量（page≤50、page_size≤100，
    单本最多 5000 词）→ `clean_text()` 洗掉 HTML → `upsert_eudic_words()` 合并；
    本地新增/改星级/删除按需写回欧路。
+5. **复习成果检验**：复习会话走完后，`/verify` 页面用本次会话的词（**只给词形不给
+   释义**）让用户写短文/造句 → `POST /api/review/writing/grade` 发给 LLM 评卷打分
+   + 校语法（复用例句那套 `llm` 配置）→ 可存成写作笔记按分数回顾。评卷在线程池跑、
+   LLM 不可用时走本地用词匹配兜底，**只读写写作三张表，绝不碰 SRS 队列**。详见
+   `docs/writing.md`。
 
 ## 项目约定
 
@@ -182,4 +192,5 @@ app/
 | `EUDIC_PROXY` / `HTTP(S)_PROXY` | — | 欧路请求代理 |
 | `EUDIC_TLS_MAX` | `1.2` | 欧路请求 TLS 上限 |
 | `MDX_REVIEW_TOAST_AUMID` | `Microsoft.WindowsPowerShell` | 通知归属 AUMID |
+| `MDX_USER_DB` | — | 覆盖可写库路径（默认 `user.db`）。起隔离测试实例时指到 `user_test.db`，避免测试写入污染真实生词本/复习队列；`review/store.py`/`eudic.py`/`goldendict.py` 都从 `vocabulary.DB_FILE` 取路径，覆盖一处即全部切换 |
 | `MDX_LLM_PROXY` | — | 例句 LLM 请求的代理，优先于 `HTTPS_PROXY` 等标准变量 |

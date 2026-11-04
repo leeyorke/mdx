@@ -70,6 +70,57 @@ CREATE TABLE IF NOT EXISTS review_settings (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
 );
+
+-- ── 复习成果检验（写作 + LLM 评卷）─────────────────────────────────
+-- 三张表与上面的复习队列表完全独立：检验是复习链路末端的加分项，读写再多
+-- 也绝不碰 review_schedule（SRS 进度只由「记得/忘了」评分驱动）。
+
+-- 一次检验任务的词表快照。词形单独存一份，评卷与本地兜底匹配都拿它对账；
+-- 词表只含 word，绝不含 translation——检验的意义就是凭记忆用词。
+CREATE TABLE IF NOT EXISTS review_writing_tasks (
+    id          TEXT PRIMARY KEY,
+    word_ids    TEXT NOT NULL,          -- JSON 数组
+    words       TEXT NOT NULL,          -- JSON 数组（词形快照）
+    mode        TEXT NOT NULL,          -- paragraph | sentences
+    created_at  INTEGER NOT NULL
+);
+
+-- 一次提交 + 评卷结果。score/grade 为空表示草稿或未评上分（LLM 不可用时的
+-- 本地兜底只算用词覆盖，不打分）。grade 是评卷 JSON 的完整落库。
+CREATE TABLE IF NOT EXISTS review_writing_submissions (
+    id          TEXT PRIMARY KEY,
+    task_id     TEXT,
+    text        TEXT NOT NULL,
+    mode        TEXT NOT NULL,
+    word_ids    TEXT NOT NULL,          -- JSON 数组
+    words       TEXT NOT NULL,          -- JSON 数组
+    used_words  TEXT NOT NULL DEFAULT '[]',  -- JSON 数组：实际用到的词（归一化后）
+    score       INTEGER,                -- 0-100，草稿/未评分为 NULL
+    feedback    TEXT,
+    grade       TEXT,                   -- JSON：{usage[], spans[], corrections[], vocab_suggestions[], polished}
+    llm_source  TEXT NOT NULL DEFAULT 'llm',  -- llm | matcher | draft
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rwsub_task ON review_writing_submissions(task_id);
+CREATE INDEX IF NOT EXISTS idx_rwsub_created ON review_writing_submissions(created_at);
+
+-- 写作笔记（稿子上的「写作笔记」列表）。从 submission 复制一份，冗余 score
+-- 供筛选/列表展示，避免列表页为了分数去 join 提交表。
+CREATE TABLE IF NOT EXISTS review_writing_notes (
+    id            TEXT PRIMARY KEY,
+    submission_id TEXT,
+    task_id       TEXT,
+    text          TEXT NOT NULL,
+    mode          TEXT NOT NULL,
+    words         TEXT NOT NULL,        -- JSON 数组
+    word_ids      TEXT NOT NULL,        -- JSON 数组
+    score         INTEGER,              -- 0-100 冗余，草稿为 NULL
+    feedback      TEXT,
+    grade         TEXT,                 -- JSON，草稿为 NULL
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rwn_created ON review_writing_notes(created_at);
+CREATE INDEX IF NOT EXISTS idx_rwn_score ON review_writing_notes(score);
 """
 
 #: 后加的列。``ALTER TABLE ADD COLUMN`` 不能带约束，所以列定义单独放这里，

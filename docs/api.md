@@ -29,6 +29,22 @@
 | `GET` | `/review` | 复习页面（会话式复习 + 配置） |
 | `GET` | `/docs` | Swagger UI 交互文档（FastAPI 自动生成） |
 
+### 复习成果检验（写作 + LLM 评卷）
+
+详见 `docs/writing.md`。评卷复用复习提醒配置里的 `llm`（`base_url` / `api_key` /
+`model`），不单独配置。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/review/writing/challenge` | 取检验词表（**只给词形不给释义**），可选 `word_ids`（逗号分隔）/ `mode` |
+| `POST` | `/api/review/writing/grade` | `{task_id, text, mode}` → 分数 + 用词覆盖 + 逐条批改 + 内联高亮 span |
+| `POST` | `/api/review/writing/draft` | `{task_id, text, mode}` 保存草稿为笔记（不打分） |
+| `POST` | `/api/review/writing/notes` | `{submission_id}` 把已评卷的提交存为写作笔记 |
+| `GET` | `/api/review/writing/notes` | 分页列笔记，`filter=all\|high\|improve` + `sortBy`/`sortOrder`，带三档计数 |
+| `GET` | `/api/review/writing/notes/{id}` | 单篇笔记详情（含完整评卷结果） |
+| `DELETE` | `/api/review/writing/notes/{id}` | 删除笔记 |
+| `GET` | `/verify` | 检验页面（写作 + 评卷弹层 + 写作笔记列表） |
+
 ## 请求及响应示例
 
 ### `GET /api/word/{word}`

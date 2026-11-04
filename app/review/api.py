@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.review import service
+from app.review import writing
 from app.review.constants import REVIEW_PAGE_URL
 from app.review.notifier import send_test_notification
 
@@ -98,6 +99,51 @@ class ExamplePayload(BaseModel):
     model_config = {
         "json_schema_extra": {
             "examples": [{"word_id": "550e8400-e29b-41d4-a716-446655440000"}]
+        }
+    }
+
+
+# ── 复习成果检验（写作 + LLM 评卷）Schemas ──────────────────────────
+
+
+class WritingGradePayload(BaseModel):
+    """提交短文 / 造句，交给 LLM 评卷。"""
+
+    task_id: str = Field(..., description="检验任务 ID（challenge 接口返回的）")
+    text: str = Field(..., description="用户写的短文或逐词造句")
+    mode: Optional[str] = Field(
+        None, description="写作模式：paragraph（默认）| sentences，不传沿用任务的"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "task_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+                    "text": "The jury has reached a final verdict after deliberation.",
+                    "mode": "paragraph",
+                }
+            ]
+        }
+    }
+
+
+class WritingDraftPayload(BaseModel):
+    """保存草稿（不打分、不评卷）。"""
+
+    task_id: str = Field(..., description="检验任务 ID")
+    text: str = Field(..., description="用户写的草稿")
+    mode: Optional[str] = Field(None, description="写作模式，不传沿用任务的")
+
+
+class WritingNotePayload(BaseModel):
+    """把一次（已评卷的）提交保存为写作笔记。"""
+
+    submission_id: str = Field(..., description="评卷返回的提交 ID")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [{"submission_id": "0f14d0ab-9605-4a62-a9e4-5ed2668c3ebe"}]
         }
     }
 
@@ -249,6 +295,122 @@ async def notify_test():
     return {"message": "测试通知已发送", "open_url": url}
 
 
+# ── 复习成果检验（写作 + LLM 评卷）─────────────────────────────────
+
+
+@router.get(
+    "/api/review/writing/challenge",
+    summary="检验词表（只给词形，不给释义）",
+    description=(
+        "组装一次检验：返回 task_id 与本次要用的词表。word_ids 不传时取「立即复习」"
+        "会话的词表（检验跟着刚复习完的一组走）；传了就用指定的词。词表只含 word，"
+        "绝不含 translation——检验的意义就是凭记忆用词。无词可检验时返回 "
+        "state=empty + empty_reason。"
+    ),
+)
+async def get_writing_challenge(
+    word_ids: Optional[str] = Query(
+        None, description="逗号分隔的生词 ID；不传则取本次会话词表"
+    ),
+    mode: str = Query("paragraph", pattern="^(paragraph|sentences)$"),
+):
+    ids = [w.strip() for w in word_ids.split(",")] if word_ids else None
+    return writing.build_challenge(ids, mode)
+
+
+@router.post(
+    "/api/review/writing/grade",
+    summary="发送给 LLM 评卷",
+    description=(
+        "把用户写的短文/造句交给 LLM 打分 + 校语法，返回分数、每个目标词是否用到、"
+        "总评、逐条批改、内联高亮 span、词汇建议。评卷走线程池（LLM 往返要 2-5 秒，"
+        "别占事件循环拖慢状态接口与调度器）。未配 LLM 或调用失败时不报错：走本地"
+        "匹配只算用词覆盖，score 为 null、llm_source=matcher，页面据此提示"
+        "「这次没评上分」。"
+    ),
+)
+async def grade_writing(payload: WritingGradePayload = Body(...)):
+    result = await run_in_threadpool(
+        writing.grade_writing, payload.task_id, payload.text, payload.mode
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404, detail="检验任务不存在，或文本为空/超长"
+        )
+    return result
+
+
+@router.post(
+    "/api/review/writing/draft",
+    summary="保存草稿为笔记",
+    description="把稿子存成草稿笔记（不打分、不评卷），之后可再评卷。",
+)
+async def save_writing_draft(payload: WritingDraftPayload = Body(...)):
+    note = writing.save_draft(payload.task_id, payload.text, payload.mode)
+    if note is None:
+        raise HTTPException(status_code=404, detail="检验任务不存在，或文本为空/超长")
+    return note
+
+
+@router.post(
+    "/api/review/writing/notes",
+    summary="保存为写作笔记",
+    description="把一次（已评卷的）提交存为写作笔记。同一提交可重复保存。",
+)
+async def save_writing_note(payload: WritingNotePayload = Body(...)):
+    note = writing.save_note(payload.submission_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="提交不存在")
+    return note
+
+
+@router.get(
+    "/api/review/writing/notes",
+    summary="写作笔记列表",
+    description=(
+        "分页列写作笔记，带三种筛选各自的计数：all（全部，含草稿）| high"
+        "（高分练习 score>=80）| improve（待优化 score<70）。排序字段走白名单防注入。"
+    ),
+)
+async def list_writing_notes(
+    filter: str = Query("all", pattern="^(all|high|improve)$"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    sortBy: str = Query("createdAt", description="createdAt | score"),
+    sortOrder: str = Query("desc", pattern="^(asc|desc)$"),
+):
+    return writing.list_notes(
+        note_filter=filter,
+        limit=limit,
+        offset=offset,
+        sort_by="created_at" if sortBy == "createdAt" else sortBy,
+        sort_order=sortOrder,
+    )
+
+
+@router.get(
+    "/api/review/writing/notes/{note_id}",
+    summary="写作笔记详情",
+    description="按 ID 取一篇写作笔记（含完整评卷结果）。",
+)
+async def get_writing_note(note_id: str):
+    note = writing.get_note(note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+    return note
+
+
+@router.delete(
+    "/api/review/writing/notes/{note_id}",
+    summary="删除写作笔记",
+    description="按 ID 删除一篇写作笔记。",
+)
+async def delete_writing_note(note_id: str):
+    if not writing.delete_note(note_id):
+        raise HTTPException(status_code=404, detail="笔记不存在")
+    return {"message": "删除成功"}
+
+
 # ── 页面 ────────────────────────────────────────────────────────────
 
 
@@ -267,6 +429,25 @@ async def review_page():
     # 不带的 Cache-Control 的话浏览器会按启发式规则缓存，旧 JS 能活几个
     # 小时——表现就是「接口返回明明是对的，页面还按旧代码渲染」。
     # no-cache 是「每次都必须回服务器验证」：文件没变就 304，变了立刻拿到。
+    return FileResponse(
+        page,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get(
+    "/verify",
+    summary="复习成果检验页面",
+    description="复习完成后检验成果：用会话的词写短文 → LLM 评卷 → 存写作笔记。",
+    response_class=FileResponse,
+    include_in_schema=False,
+)
+async def verify_page():
+    page = STATIC_DIR / "verify.html"
+    if not page.exists():  # pragma: no cover —— 打包漏文件时的兜底
+        raise HTTPException(status_code=404, detail="检验页面不存在")
+    # 同 /review：单文件页面必须 no-cache，否则改一次旧 JS 能活几小时。
     return FileResponse(
         page,
         media_type="text/html; charset=utf-8",

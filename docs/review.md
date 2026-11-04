@@ -24,10 +24,13 @@
 | `app/review/store.py` | SQLite 落库（与生词本同库 `user.db`） |
 | `app/review/notifier.py` | Windows 系统通知（`windows-toasts`） |
 | `app/review/example.py` | 例句生成（可选 LLM，回落到收藏时的上下文） |
+| `app/review/llm_client.py` | OpenAI 兼容 LLM 客户端传输层（例句与写作评卷共用） |
+| `app/review/writing.py` / `writing_store.py` | 复习成果检验：写作 + LLM 评卷 + 写作笔记（见 `docs/writing.md`） |
 | `app/review/service.py` | 同步队列、跑一轮调度（每日一次批量提醒）、组装会话、评分、组卡片 |
 | `app/review/scheduler.py` | 后台常驻循环（随 FastAPI 起停） |
-| `app/review/api.py` | REST 接口 + 复习页面路由 |
+| `app/review/api.py` | REST 接口 + 复习/检验页面路由 |
 | `app/review/static/review.html` | 会话式复习页面（复习 + 配置） |
+| `app/review/static/verify.html` | 复习成果检验页面（写作 + 评卷 + 笔记） |
 
 ## 艾宾浩斯阶梯
 
@@ -82,6 +85,9 @@
 - 一组都凑不出来时接口返回 `state=empty` + `empty_reason`
   （`noWords` / `allGraduated` / `nothingDue`），页面会把它翻成一句人话 toast
   出来，不会静默跳回空闲页让用户以为按钮坏了。
+
+复习走完之后还有一个**检验环节**：用本次会话的词写短文 / 造句 → LLM 评卷打分 +
+校语法 → 存写作笔记。那是独立的接力功能，见 `docs/writing.md`。
 
 ## Windows 通知
 

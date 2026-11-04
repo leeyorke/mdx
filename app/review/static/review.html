@@ -154,6 +154,13 @@
   .cta-area { text-align: center; padding: 46px 0 38px; }
   .cta-text { color: var(--muted); margin: 0 0 24px; }
   .done-emoji { font-size: 44px; margin-bottom: 8px; }
+  .done-actions { display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
+  .btn-verify {
+    border: none; background: var(--soft); color: var(--fg);
+    font-weight: 600; padding: 11px 24px; border-radius: 999px; cursor: pointer;
+    transition: opacity .15s;
+  }
+  .btn-verify:hover { opacity: .88; }
 
   /* ── 状态 ──────────────────────────────────────────────────────── */
   .status { margin-top: 28px; }
@@ -327,7 +334,10 @@
       <div class="cta-area">
         <div class="done-emoji">🎉</div>
         <p class="cta-text" id="done-text">完成！</p>
-        <button class="btn-primary" id="again-review">再来一组</button>
+        <div class="done-actions">
+          <button class="btn-primary" id="again-review">再来一组</button>
+          <button class="btn-verify" id="go-verify">检验成果 →</button>
+        </div>
       </div>
     </div>
   </section>
@@ -736,6 +746,10 @@ $("speak").addEventListener("click", () => {
 
 $("start-review").addEventListener("click", () => startSession("manual"));
 $("again-review").addEventListener("click", () => startSession("manual"));
+// 检验成果：跳到检验页，由它取本次会话的词（用户可选择去不去，不自动跳）
+$("go-verify").addEventListener("click", () => {
+  window.location.href = "/verify";
+});
 
 $("quit-review").addEventListener("click", () => {
   currentCard = null;

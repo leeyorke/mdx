@@ -1,5 +1,6 @@
 """生词本数据层 - 独立的 SQLite 数据库"""
 
+import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -7,7 +8,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
-DB_FILE = Path(__file__).resolve().parent.parent / "user.db"
+# 生词本库（同时也是复习、写作评卷、欧路配置的唯一可写库）。
+#
+# 默认 user.db；可用环境变量 ``MDX_USER_DB`` 覆盖，用于起一个指向独立测试库
+# （如 user_test.db）的实例——**避免测试写入污染真实生词本与复习队列**。
+# oaldpe.db / oxford.db / ngsl.db 都是只读词典，与生词本无关，测试时共用即可，
+# 不必复制。review/store.py、eudic.py、goldendict.py 都从本模块 import DB_FILE，
+# 所以覆盖这一处，全部写路径一起切换。
+_db_override = os.environ.get("MDX_USER_DB", "").strip()
+DB_FILE = Path(_db_override) if _db_override else Path(__file__).resolve().parent.parent / "user.db"
 
 # ── Schema ──────────────────────────────────────────────────────────
 _CREATE_SQL = """

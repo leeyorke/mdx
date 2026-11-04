@@ -115,3 +115,35 @@ EXAMPLE_COLLOCATION_LIMIT = 5
 
 #: 调用 LLM 的超时时间（秒）。
 EXAMPLE_LLM_TIMEOUT_SECONDS = 20.0
+
+# ── 复习成果检验（写作 + LLM 评卷）───────────────────────────────────
+
+#: 写作模式：一篇短文用上所有词，或逐词造句。
+WRITING_MODE_PARAGRAPH = "paragraph"
+WRITING_MODE_SENTENCES = "sentences"
+WRITING_MODES: tuple[str, ...] = (WRITING_MODE_PARAGRAPH, WRITING_MODE_SENTENCES)
+
+#: 单次检验最多带多少个目标词（等于复习会话的队列上限，留个硬顶防滥用）。
+WRITING_MAX_WORDS = 200
+
+#: 提交文本的长度上限（字符）。评卷 prompt 会整段塞进去，别让人贴一本书。
+WRITING_MAX_TEXT_CHARS = 8000
+
+#: 笔记列表「高分练习」阈值：``score >= 80``。
+WRITING_NOTE_HIGH_SCORE = 80
+
+#: 笔记列表「待优化」阈值：``score < 70``（70–79 区间两边都不算）。
+WRITING_NOTE_IMPROVE_BELOW = 70
+
+#: 批改条目的类型白名单（LLM 输出之外的类型一律归到 ``word_choice``）。
+WRITING_CORRECTION_TYPES: tuple[str, ...] = (
+    "grammar",
+    "spelling",
+    "tense",
+    "collocation",
+    "word_choice",
+)
+
+#: 内联高亮标记：用对了（绿）/ 有错（红）。
+WRITING_SPAN_GOOD = "good"
+WRITING_SPAN_ERROR = "error"

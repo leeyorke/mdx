@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mdx · 检验复习成果</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --fg: #1d1d1f;
+    --muted: #86868b;
+    --line: #e8e8ed;
+    --track: #ececed;
+    --soft: #f5f5f7;
+    --field: #ffffff;
+    --accent: #1d1d1f;
+    --accent-fg: #ffffff;
+    --ok: #248a3d;
+    --danger: #d70015;
+    --good-bg: #e8f5ec;
+    --err-bg: #fdecec;
+    --shadow: 0 1px 2px rgb(0 0 0 / 5%), 0 14px 36px rgb(0 0 0 / 7%);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000;
+      --card: #1c1c1e;
+      --fg: #f5f5f7;
+      --muted: #98989d;
+      --line: #2c2c2e;
+      --track: #2c2c2e;
+      --soft: #2c2c2e;
+      --field: #2c2c2e;
+      --accent: #f5f5f7;
+      --accent-fg: #1d1d1f;
+      --ok: #30d158;
+      --danger: #ff453a;
+      --good-bg: #12301b;
+      --err-bg: #3a1517;
+      --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 14px 36px rgb(0 0 0 / 50%);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 20px 28px;
+    background: var(--bg); color: var(--fg);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui,
+      "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; font-weight: 700; letter-spacing: .2px; }
+  .subtitle { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+  .card {
+    background: var(--card); border-radius: 20px; box-shadow: var(--shadow);
+    padding: 26px 30px 30px; margin-bottom: 18px;
+  }
+  .back { text-align: center; margin: 4px 0 18px; }
+  .back a { color: var(--muted); font-size: 13px; text-decoration: none; }
+  .back a:hover { color: var(--fg); }
+
+  /* 词表 chip */
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--soft); border-radius: 14px; padding: 8px 13px;
+    font-size: 14px; font-weight: 600; cursor: default;
+  }
+  .chip.used { color: var(--muted); background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+  .chip .spk {
+    background: none; border: 0; padding: 0; cursor: pointer; color: var(--muted);
+    font-size: 13px; line-height: 1;
+  }
+  .chip .spk:hover { color: var(--fg); }
+
+  .counter { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .counter b { color: var(--fg); }
+
+  textarea {
+    width: 100%; min-height: 220px; resize: vertical;
+    background: var(--field); color: var(--fg);
+    border: 0; border-radius: 14px; padding: 16px 18px; font-size: 15px;
+    font: inherit; box-shadow: inset 0 0 0 1px var(--line);
+  }
+  textarea:focus { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+  textarea::placeholder { color: var(--muted); }
+
+  .actions { display: flex; flex-direction: column; align-items: center; margin-top: 22px; gap: 12px; }
+  .send {
+    width: 76px; height: 76px; border-radius: 50%; border: 0; cursor: pointer;
+    background: var(--accent); color: var(--accent-fg); font-size: 30px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: var(--shadow); transition: transform .15s ease;
+  }
+  .send:hover { transform: scale(1.04); }
+  .send:disabled { opacity: .5; cursor: progress; }
+  .send-label { font-size: 13px; font-weight: 600; }
+  .link { background: none; border: 0; color: var(--muted); font-size: 13px; cursor: pointer; padding: 4px; }
+  .link:hover { color: var(--fg); }
+  .empty { text-align: center; color: var(--muted); padding: 30px 0; }
+
+  /* 评卷弹层 */
+  .overlay {
+    position: fixed; inset: 0; background: rgb(0 0 0 / .35);
+    display: none; align-items: flex-start; justify-content: center;
+    overflow-y: auto; padding: 40px 16px; z-index: 20;
+  }
+  .overlay.open { display: flex; }
+  .modal {
+    background: var(--card); border-radius: 22px; box-shadow: var(--shadow);
+    max-width: 560px; width: 100%; padding: 30px 34px; position: relative;
+  }
+  .modal h2 { font-size: 14px; margin: 0 0 22px; color: var(--muted); font-weight: 600; }
+  .close {
+    position: absolute; top: 22px; right: 22px; width: 30px; height: 30px;
+    border-radius: 8px; border: 1px solid var(--line); background: var(--card);
+    color: var(--fg); font-size: 14px; cursor: pointer;
+  }
+  .score { text-align: center; margin: 4px 0 6px; font-size: 64px; font-weight: 700; line-height: 1; letter-spacing: -2px; }
+  .score-of { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .feedback { text-align: center; font-size: 15px; margin: 0 auto 22px; max-width: 440px; }
+  .yourtext {
+    background: var(--soft); border-radius: 16px; padding: 18px 20px; margin-bottom: 22px;
+  }
+  .label { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .htext { font-size: 15px; line-height: 1.8; white-space: pre-wrap; }
+  .htext .g { background: var(--good-bg); color: var(--ok); border-radius: 4px; padding: 0 2px; text-decoration: underline; text-underline-offset: 3px; }
+  .htext .e { background: var(--err-bg); color: var(--danger); border-radius: 4px; padding: 0 2px; text-decoration: underline wavy; text-underline-offset: 3px; }
+  .sec { margin-bottom: 20px; }
+  .sec-title { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .corr { margin-bottom: 16px; }
+  .corr .bad { color: var(--danger); text-decoration: line-through; font-size: 15px; }
+  .corr .good { color: var(--ok); font-weight: 600; font-size: 15px; }
+  .corr .why { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  .vocab .w { color: var(--ok); font-weight: 600; }
+  .vocab .n { color: var(--muted); font-size: 14px; }
+  .hr { height: 1px; background: var(--line); margin: 20px 0; }
+  .modal-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; }
+  .btn {
+    width: 100%; padding: 15px; border-radius: 14px; border: 0; cursor: pointer;
+    font-size: 15px; font-weight: 600; font: inherit;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-fg); }
+  .btn.ghost { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
+  .matcher-note { text-align: center; color: var(--danger); font-size: 13px; margin-top: 8px; }
+
+  /* 写作笔记列表 */
+  .notes-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .tabs { display: flex; background: var(--soft); border-radius: 12px; padding: 3px; }
+  .tab {
+    border: 0; background: none; padding: 6px 14px; border-radius: 9px; cursor: pointer;
+    font-size: 13px; color: var(--muted); font: inherit;
+  }
+  .tab.on { background: var(--card); color: var(--fg); box-shadow: 0 1px 3px rgb(0 0 0 / .08); }
+  .note {
+    background: var(--card); border-radius: 18px; box-shadow: var(--shadow);
+    padding: 20px 24px; margin-bottom: 14px;
+  }
+  .note-meta { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .note-date { font-size: 12px; color: var(--muted); }
+  .note-score { font-size: 13px; font-weight: 700; color: var(--ok); }
+  .note-score.draft { color: var(--muted); font-weight: 500; }
+  .note-words { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .note-words span { background: var(--soft); border-radius: 9px; padding: 3px 9px; font-size: 12px; }
+  .note-text { font-size: 14px; line-height: 1.7; }
+  .ai { background: var(--soft); border-radius: 12px; padding: 14px 16px; margin-top: 12px; }
+  .ai-title { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .ai li { font-size: 13px; margin-bottom: 6px; }
+  .ai .del { color: var(--danger); text-decoration: line-through; }
+  .ai .ok { color: var(--ok); }
+  .foot { text-align: center; color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .toast {
+    position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%);
+    background: var(--accent); color: var(--accent-fg); padding: 11px 20px;
+    border-radius: 12px; font-size: 14px; opacity: 0; transition: opacity .2s; z-index: 40;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>复习完成 · 检验一下成果</h1>
+    <p class="subtitle">用以下单词进行创作，加深记忆</p>
+  </header>
+  <div class="back"><a href="/review">← 返回复习</a></div>
+
+  <div class="card" id="writeCard">
+    <div class="chips" id="chips"></div>
+    <div class="counter" id="counter">已使用单词: <b>0 / 0</b></div>
+    <textarea id="draft" placeholder="用上面的所有单词写一篇短文，或逐词造句..."></textarea>
+    <div class="actions">
+      <button class="send" id="sendBtn" title="发送给 LLM 评卷">✈</button>
+      <div class="send-label">发送给 LLM 评卷</div>
+      <button class="link" id="draftBtn">保存草稿</button>
+      <div id="hint" class="empty"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="notes-head">
+      <div>
+        <h1 style="font-size:17px">写作笔记</h1>
+        <p class="subtitle">记录词汇在实战中的运用</p>
+      </div>
+      <div class="tabs" id="tabs">
+        <button class="tab on" data-f="all">全部笔记</button>
+        <button class="tab" data-f="high">高分练习</button>
+        <button class="tab" data-f="improve">待优化</button>
+      </div>
+    </div>
+    <div id="notes"></div>
+    <div class="foot" id="notesFoot"></div>
+  </div>
+</div>
+
+<!-- 评卷弹层 -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <button class="close" id="closeBtn">✕</button>
+    <h2>LLM 智能评卷</h2>
+    <div id="mBody"></div>
+    <div class="modal-actions">
+      <button class="btn primary" id="saveNoteBtn">保存为笔记</button>
+      <button class="btn ghost" id="rewriteBtn">重新写一遍</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var state = { taskId: null, words: [], mode: "paragraph", last: null, filter: "all" };
+  var $ = function (id) { return document.getElementById(id); };
+
+  function toast(msg) {
+    var t = $("toast"); t.textContent = msg; t.classList.add("show");
+    setTimeout(function () { t.classList.remove("show"); }, 2200);
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // ── 朗读：浏览器本地 speechSynthesis，后端不提供 TTS ──────────────
+  function speak(word) {
+    if (!window.speechSynthesis) { toast("当前浏览器不支持朗读"); return; }
+    var u = new SpeechSynthesisUtterance(word);
+    u.lang = "en-US"; u.rate = 0.95;
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  }
+
+  // ── 词表 chip ────────────────────────────────────────────────────
+  function renderChips() {
+    var box = $("chips"); box.innerHTML = "";
+    state.words.forEach(function (w) {
+      var chip = document.createElement("span");
+      chip.className = "chip"; chip.dataset.word = w;
+      chip.innerHTML = '<span class="w">' + esc(w) + '</span>';
+      var spk = document.createElement("button");
+      spk.className = "spk"; spk.textContent = "🔊"; spk.title = "朗读 " + w;
+      spk.onclick = function (e) { e.stopPropagation(); speak(w); };
+      chip.appendChild(spk);
+      box.appendChild(chip);
+    });
+  }
+
+  // ── 实时「已使用 2/7」：纯前端整词匹配，不每次输入都打后端 ────────
+  function stem(t) {
+    if (t.length > 4 && /ies$/.test(t)) return t.slice(0, -3) + "y";
+    var sfx = ["ing", "ed", "es", "s"];
+    for (var i = 0; i < sfx.length; i++) {
+      if (t.length > 3 && t.slice(-sfx[i].length) === sfx[i]) return t.slice(0, -sfx[i].length);
+    }
+    return t;
+  }
+  function usedSet(text) {
+    var tokens = {}, stems = {};
+    (text.toLowerCase().match(/[a-z0-9']+/g) || []).forEach(function (t) {
+      tokens[t] = 1; stems[stem(t)] = 1;
+    });
+    var used = {};
+    state.words.forEach(function (w) {
+      var k = w.toLowerCase();
+      if (tokens[k] || stems[stem(k)]) used[w] = 1;
+    });
+    return used;
+  }
+  function updateCounter() {
+    var used = usedSet($("draft").value);
+    var n = Object.keys(used).length;
+    $("counter").innerHTML = "已使用单词: <b>" + n + " / " + state.words.length + "</b>";
+    document.querySelectorAll("#chips .chip").forEach(function (chip) {
+      chip.classList.toggle("used", !!used[chip.dataset.word]);
+    });
+  }
+
+  // ── 高亮渲染：后端给的 span 定位驱动 ─────────────────────────────
+  function highlight(text, spans) {
+    if (!spans || !spans.length) return esc(text);
+    spans = spans.slice().sort(function (a, b) { return a.start - b.start; });
+    var out = "", pos = 0;
+    spans.forEach(function (s) {
+      if (s.start < pos || s.start > text.length || s.end > text.length) return;
+      out += esc(text.slice(pos, s.start));
+      out += '<span class="' + (s.kind === "good" ? "g" : "e") + '">' + esc(text.slice(s.start, s.end)) + "</span>";
+      pos = s.end;
+    });
+    out += esc(text.slice(pos));
+    return out;
+  }
+
+  // ── 拉词表 ───────────────────────────────────────────────────────
+  function loadChallenge() {
+    var qs = new URLSearchParams(location.search);
+    var ids = qs.get("word_ids");
+    var url = "/api/review/writing/challenge?mode=paragraph" + (ids ? "&word_ids=" + encodeURIComponent(ids) : "");
+    fetch(url).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.state === "empty") {
+        $("hint").textContent = "今天没有可检验的词——先去复习一组再来。";
+        $("sendBtn").disabled = true; $("draftBtn").disabled = true;
+        return;
+      }
+      state.taskId = d.task_id; state.words = d.words || []; state.mode = d.mode || "paragraph";
+      renderChips(); updateCounter();
+    }).catch(function () {
+      $("hint").textContent = "加载失败，刷新试试。";
+    });
+  }
+
+  // ── 评卷 ─────────────────────────────────────────────────────────
+  function grade() {
+    var text = $("draft").value.trim();
+    if (!text) { toast("先写点什么吧"); return; }
+    if (!state.taskId) { toast("没有检验任务"); return; }
+    $("sendBtn").disabled = true; $("hint").textContent = "评卷中，稍等几秒…";
+    fetch("/api/review/writing/grade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: state.taskId, text: text, mode: state.mode })
+    }).then(function (r) {
+      if (!r.ok) throw new Error("bad");
+      return r.json();
+    }).then(function (d) {
+      state.last = d;
+      $("hint").textContent = "";
+      renderModal(d);
+    }).catch(function () {
+      $("hint").textContent = "评卷失败，检查 LLM 配置后重试。";
+    }).finally(function () {
+      $("sendBtn").disabled = false;
+    });
+  }
+
+  function renderModal(d) {
+    var grade = d.grade || {};
+    var spans = grade.spans || [];
+    var h = "";
+    if (d.score == null) {
+      h += '<div class="score" style="color:var(--muted)">—</div>';
+      h += '<div class="score-of">未打分</div>';
+      h += '<div class="matcher-note">' + esc(d.feedback || "这次没评上分。") + "</div>";
+    } else {
+      h += '<div class="score">' + d.score + "</div>";
+      h += '<div class="score-of">/ 100</div>';
+    }
+    if (d.score != null && d.feedback) h += '<p class="feedback">' + esc(d.feedback) + "</p>";
+    h += '<div class="yourtext"><div class="label">你的短文</div><div class="htext">' + highlight(d.text, spans) + "</div></div>";
+
+    var corr = grade.corrections || [];
+    if (corr.length) {
+      h += '<div class="sec"><div class="sec-title">批改反馈</div>';
+      corr.forEach(function (c) {
+        h += '<div class="corr">';
+        if (c.original) h += '<div class="bad">' + esc(c.original) + "</div>";
+        if (c.suggestion) h += '<div class="good">' + esc(c.suggestion) + "</div>";
+        if (c.explanation) h += '<div class="why">' + esc(c.explanation) + "</div>";
+        h += "</div>";
+      });
+      h += "</div>";
+    }
+
+    var vocab = grade.vocab_suggestions || [];
+    if (vocab.length) {
+      h += '<div class="hr"></div><div class="sec vocab"><div class="sec-title">词汇建议</div>';
+      vocab.forEach(function (v) {
+        h += '<div class="corr"><span class="w">' + esc(v.word) + "</span>" +
+          (v.note ? ' <span class="n">— ' + esc(v.note) + "</span>" : "") + "</div>";
+      });
+      h += "</div>";
+    }
+
+    // 本次关联单词（稿子底部那排 chip）
+    h += '<div class="hr"></div><div class="sec"><div class="sec-title">本次关联单词</div><div class="note-words">';
+    (d.words || []).forEach(function (w) { h += "<span>" + esc(w) + "</span>"; });
+    h += "</div></div>";
+
+    $("mBody").innerHTML = h;
+    $("overlay").classList.add("open");
+  }
+
+  function closeModal() { $("overlay").classList.remove("open"); }
+
+  // ── 保存草稿 / 笔记 ─────────────────────────────────────────────
+  function saveDraft() {
+    var text = $("draft").value.trim();
+    if (!text) { toast("先写点什么吧"); return; }
+    fetch("/api/review/writing/draft", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: state.taskId, text: text, mode: state.mode })
+    }).then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
+      .then(function () { toast("草稿已保存"); loadNotes(); })
+      .catch(function () { toast("保存失败"); });
+  }
+
+  function saveNote() {
+    if (!state.last) return;
+    fetch("/api/review/writing/notes", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ submission_id: state.last.submission_id })
+    }).then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
+      .then(function () { toast("已保存为笔记"); closeModal(); loadNotes(); })
+      .catch(function () { toast("保存失败"); });
+  }
+
+  // ── 写作笔记列表 ─────────────────────────────────────────────────
+  function fmtDate(ms) {
+    var d = new Date(ms);
+    var wd = ["日", "一", "二", "三", "四", "五", "六"][d.getDay()];
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    var ap = d.getHours() < 12 ? "上午" : "下午";
+    var hh = d.getHours() % 12 || 12;
+    return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 · " + wd + " " + ap + " " + p(hh) + ":" + p(d.getMinutes());
+  }
+
+  function renderNotes(d) {
+    var box = $("notes");
+    if (!d.records.length) { box.innerHTML = '<div class="empty">还没有笔记，写一篇检验一下吧。</div>'; }
+    box.innerHTML = d.records.map(function (n) {
+      var g = n.grade || {};
+      var corr = g.corrections || [];
+      var scoreHtml = n.score == null
+        ? '<span class="note-score draft">草稿</span>'
+        : '<span class="note-score">' + (n.score / 10).toFixed(1) + " / 10</span>";
+      var h = '<div class="note">';
+      h += '<div class="note-meta"><span class="note-date">' + fmtDate(n.created_at) + "</span>" + scoreHtml + "</div>";
+      h += '<div class="note-words">' + (n.words || []).map(function (w) { return "<span>" + esc(w) + "</span>"; }).join("") + "</div>";
+      h += '<div class="note-text">' + highlight(n.text, g.spans || []) + "</div>";
+      if (corr.length) {
+        h += '<div class="ai"><div class="ai-title">AI 语法批注</div><ul style="margin:0;padding-left:18px">';
+        corr.forEach(function (c) {
+          h += "<li>" + (c.original ? '<span class="del">' + esc(c.original) + "</span> " : "") +
+            (c.suggestion ? '应改为 <span class="ok">' + esc(c.suggestion) + "</span> " : "") +
+            (c.explanation ? "（" + esc(c.explanation) + "）" : "") + "</li>";
+        });
+        h += "</ul></div>";
+      }
+      return h + "</div>";
+    }).join("");
+    $("notesFoot").textContent = "已累计练习 " + d.grand_total + " 篇短文 · 继续加油";
+  }
+
+  function loadNotes() {
+    fetch("/api/review/writing/notes?filter=" + state.filter + "&limit=20").then(function (r) { return r.json(); })
+      .then(renderNotes)
+      .catch(function () { $("notes").innerHTML = '<div class="empty">笔记加载失败。</div>'; });
+  }
+
+  // ── 绑定 ─────────────────────────────────────────────────────────
+  $("sendBtn").onclick = grade;
+  $("draftBtn").onclick = saveDraft;
+  $("draft").addEventListener("input", updateCounter);
+  $("closeBtn").onclick = closeModal;
+  $("saveNoteBtn").onclick = saveNote;
+  $("rewriteBtn").onclick = function () {
+    closeModal(); $("draft").focus();
+  };
+  $("overlay").onclick = function (e) { if (e.target === $("overlay")) closeModal(); };
+  document.querySelectorAll("#tabs .tab").forEach(function (tab) {
+    tab.onclick = function () {
+      document.querySelectorAll("#tabs .tab").forEach(function (t) { t.classList.remove("on"); });
+      tab.classList.add("on");
+      state.filter = tab.dataset.f;
+      loadNotes();
+    };
+  });
+
+  loadChallenge();
+  loadNotes();
+})();
+</script>
+</body>
+</html>
