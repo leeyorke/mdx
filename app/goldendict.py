@@ -523,11 +523,16 @@ class GoldenDictWatcher:
     # ── 写入 ──
 
     def _build_payload(self, word: str, source: str) -> dict:
-        """构造写入生词本的 payload（translation 查词典生成）"""
+        """构造写入生词本的 payload（translation 查词典生成）
+
+        不再往 ``note`` 写「来源：GoldenDict …」——那是本该属于用户备注的
+        字段，之前把它当自由文本塞溯源信息，会在前端详情栏的笔记框里显示
+        成一条可编辑的「备注」。GoldenDict 导入的都是本地词（``source`` 落
+        默认值 ``local``），出处靠 ``source`` 即可，无需额外备注。
+        """
         return {
             "word": word,
             "translation": self._lookup_translation(word),
-            "note": f"来源：GoldenDict {SOURCE_LABELS.get(source, source)} 自动导入",
         }
 
     # ── 主流程 ──

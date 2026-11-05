@@ -251,15 +251,19 @@
 
 **请求体**
 
+> 字段为 snake_case。`from_context` 是单词出处（收藏时所在的完整句子），仅前端
+> 划线收藏写入；欧路 / GoldenDict 等其它途径不传（落库为空）。
+
 ```json
 {
   "word": "apple",
   "translation": "苹果",
-  "contextUrl": "https://example.com/article/1",
-  "contextText": "I ate an apple.",
-  "sourceLanguage": "eng",
-  "targetLanguage": "zho",
-  "note": "test"
+  "context_url": "https://example.com/article/1",
+  "context_text": "I ate an apple.",
+  "source_language": "eng",
+  "target_language": "zho",
+  "note": "test",
+  "from_context": "I ate an apple."
 }
 ```
 
@@ -279,6 +283,9 @@
   "last_reviewed_at": null,
   "review_count": 0,
   "note": "test",
+  "source": "local",
+  "phonetic": null,
+  "from_context": "I ate an apple.",
   "duplicate": false
 }
 ```
@@ -312,7 +319,10 @@
       "created_at": 1748832000000,
       "last_reviewed_at": 1748832600000,
       "review_count": 1,
-      "note": "记住了"
+      "note": "记住了",
+      "source": "local",
+      "phonetic": null,
+      "from_context": "I ate an apple."
     }
   ],
   "total": 1,
@@ -340,7 +350,10 @@
   "created_at": 1748832000000,
   "last_reviewed_at": null,
   "review_count": 0,
-  "note": "test"
+  "note": "test",
+  "source": "local",
+  "phonetic": null,
+  "from_context": "I ate an apple."
 }
 ```
 
@@ -388,6 +401,9 @@
   "created_at": 1748832000000,
   "last_reviewed_at": 1748832600000,
   "review_count": 1,
-  "note": "记住了"
+  "note": "记住了",
+  "source": "local",
+  "phonetic": null,
+  "from_context": "I ate an apple."
 }
 ```

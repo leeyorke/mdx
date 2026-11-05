@@ -16,7 +16,11 @@ httpx + windows-toasts；依赖用 uv 管理（`uv.lock`），虚拟环境在 `.
 
 ```bash
 # 启动服务（API + GoldenDict 监听 + 复习调度器都随这一个进程起停）
-uv run python -X utf8 -m uvicorn app.main:app --host 0.0.0.0 --port 4080
+# 启动配置（host/port/用哪个库）统一在 run.py；默认 0.0.0.0:4080 + user.db
+uv run python -X utf8 run.py
+
+# 测试服务（隔离 user_test.db，默认端口 4081；--fresh 重新复制种子）
+uv run python -X utf8 run.py --test
 
 # 安装/同步依赖（改了 pyproject.toml 之后）
 uv sync

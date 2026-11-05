@@ -104,6 +104,10 @@ class AddVocabularyWordPayload(BaseModel):
         None,
         description="备注",
     )
+    from_context: Optional[str] = Field(
+        None,
+        description="单词出处：收藏时所在的完整句子（仅前端划线收藏写入）",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -116,6 +120,7 @@ class AddVocabularyWordPayload(BaseModel):
                     "source_language": "en",
                     "target_language": "zh",
                     "note": "Important word",
+                    "from_context": "When you're left with no option.",
                 }
             ]
         }
@@ -181,6 +186,9 @@ class VocabularyRecordResponse(BaseModel):
         "local", description="来源：local = 本地收藏，eudic = 欧路生词本"
     )
     phonetic: Optional[str] = Field(None, description="音标（欧路侧带过来的）")
+    from_context: Optional[str] = Field(
+        None, description="单词出处：收藏时所在的完整句子（仅前端划线收藏写入）"
+    )
 
     model_config = {"from_attributes": True}
 
@@ -491,6 +499,7 @@ async def create_vocabulary(
         source_language=payload.source_language,
         target_language=payload.target_language,
         note=payload.note,
+        from_context=payload.from_context,
     )
 
     if not created:

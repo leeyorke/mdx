@@ -5,9 +5,31 @@
 ```bash
 cd D:\myworkspace\mdx
 # 一条命令同时启动 API 和 GoldenDict 监听（监听随主应用启停）
-# --host 0.0.0.0 允许局域网访问；只本机使用可改成 127.0.0.1
-uv run python -X utf8 -m uvicorn app.main:app --host 0.0.0.0 --port 4080
+# 默认走 user.db，监听 0.0.0.0:4080（0.0.0.0 允许局域网访问；只本机用可加 --host 127.0.0.1）
+uv run python -X utf8 run.py
 ```
+
+启动配置（host / port / 用哪个库）统一在 `run.py` 里，其它脚本都调它——要改默认值只改这一处。
+
+### 测试服务（隔离库，不污染真实数据）
+
+```bash
+# 走隔离的 user_test.db，默认端口 4081；首次会自动从 user.db 复制种子并关掉复习提醒
+uv run python -X utf8 run.py --test
+
+# 换端口 / 重新复制种子（丢弃旧测试数据）
+uv run python -X utf8 run.py --test --port 4082
+uv run python -X utf8 run.py --test --fresh
+```
+
+`user_test.db` 的 schema 会随服务启动自动迁移（`_ensure_db`），**不用手动改**。
+也可用 `pwsh script/run_test_server.ps1 [-Port 4082] [-Fresh]`，它只是 `run.py --test` 的薄封装。
+
+### 改代码后重启
+
+双击根目录 `restart_server.cmd`：停掉 4080 进程 → 通过计划任务 `MDX-GoldenDict-API`
+重新拉起（隐藏窗口，和开机自启一致）。Python 每次启动重新读源码，所以改完代码双击它即加载最新代码。
+前提是计划任务已存在（`scheduled_task_install.cmd` 装过一次）。日志：`data/restart_server.log`。
 
 ## 开机自启
 

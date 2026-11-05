@@ -28,7 +28,7 @@
 | `scheduled_task_stop.cmd` | 卸载：停止 4080 服务并删除计划任务；成功退出码 `0`，跑完 netstat 无 LISTENING |
 | `script/mdx-task.xml` | 任务定义：登录触发，`wscript → autostart.vbs`，不限时长、电池模式照常 |
 | `script/autostart.vbs` | 隐藏窗口启动器 |
-| `script/run_server.bat` | cd 到项目根，用 `.venv\Scripts\python.exe` 起 uvicorn（4080），日志追加到 `data\server.log` |
+| `script/run_server.bat` | cd 到项目根，用 `.venv\Scripts\python.exe` 跑 `run.py`（它内部起 uvicorn，host/port/库默认 `0.0.0.0:4080` + `user.db` 都在 `run.py` 里），日志追加到 `data\server.log` |
 | `script/install_autostart.ps1` | 备用：无管理员权限时改用「启动文件夹」快捷方式 |
 | `script/stop_server.ps1` | 只停服务、不删任务（按 4080 端口结束进程） |
 

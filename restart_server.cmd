@@ -68,7 +68,10 @@ pause
 exit /b 1
 
 :port_up
-echo [OK] 4080 service restarted - running at http://127.0.0.1:4080
+echo [OK] 4080 service restarted.
+echo     Local:   http://127.0.0.1:4080
+echo     LAN:     http://^<this-machine-ip^>:4080  (listens on 0.0.0.0, so other
+echo              devices on the same network can reach it via this machine's IP)
 echo [%date% %time%] restart OK >> "%LOG%"
 pause
 exit /b 0

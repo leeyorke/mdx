@@ -40,7 +40,11 @@ CREATE TABLE IF NOT EXISTS vocabulary_words (
     -- 欧路生词本 id，写回欧路时要用
     source_category   TEXT,
     -- 音标（欧路侧带过来）
-    phonetic          TEXT
+    phonetic          TEXT,
+    -- 单词出处：收藏时所在的完整句子（如 "When you're left with no option."）。
+    -- 仅前端划线收藏时写入；欧路 / GoldenDict 等其它途径为空。
+    -- 列名用 from_context 而非 from，避开 SQL / Python 关键字。
+    from_context      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_vw_word      ON vocabulary_words(word);
@@ -57,6 +61,7 @@ _MIGRATION_COLUMNS = (
     ("source_id", "TEXT"),
     ("source_category", "TEXT"),
     ("phonetic", "TEXT"),
+    ("from_context", "TEXT"),
 )
 
 
@@ -133,6 +138,7 @@ def add_word(
     source_id: Optional[str] = None,
     source_category: Optional[str] = None,
     phonetic: Optional[str] = None,
+    from_context: Optional[str] = None,
 ) -> tuple[dict, bool]:
     """添加生词，返回 ``(记录, 是否新建)``。
 
@@ -175,6 +181,7 @@ def add_word(
             "source_id": source_id,
             "source_category": source_category,
             "phonetic": phonetic,
+            "from_context": from_context,
         }
         conn.execute(
             """
@@ -182,12 +189,12 @@ def add_word(
             (id, word, translation, context_url, context_text,
              source_language, target_language, star, created_at,
              last_reviewed_at, review_count, note,
-             source, source_id, source_category, phonetic)
+             source, source_id, source_category, phonetic, from_context)
             VALUES
             (:id, :word, :translation, :context_url, :context_text,
              :source_language, :target_language, :star, :created_at,
              :last_reviewed_at, :review_count, :note,
-             :source, :source_id, :source_category, :phonetic)
+             :source, :source_id, :source_category, :phonetic, :from_context)
             """,
             record,
         )
