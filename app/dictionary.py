@@ -77,18 +77,26 @@ def parse_dictionary_entry(entry_html: str) -> dict:
             chn_tag = xt_tag.find("chn") if xt_tag else None
             chn_text = chn_tag.get_text(strip=True) if chn_tag else ""
 
-            # 移除 xt 标签，提取英文部分
+            # 提取英文部分。英文原句由两类内容按文档顺序组成：
+            #   1) <span class="x"> 下的直接文本节点
+            #   2) <span class="cl"> 里的关键短语（如 claimed victory / make a claim）
+            # 要排除的：xt(中文)、a(发音按钮，无文本)、span.gloss(英文括注)。
+            # 注意 find_all() 只返回标签、不返回文本节点，所以必须遍历 .contents
+            # 才能拿到直接文本；且要在 decompose 掉 xt 之前收集。
+            def _collect_text(node) -> str:
+                parts: list[str] = []
+                for child in node.contents:
+                    if isinstance(child, str):
+                        parts.append(child.strip())
+                    elif child.name == "span" and "cl" in (child.get("class") or []):
+                        parts.append(child.get_text(strip=True))
+                return " ".join(p for p in parts if p).strip()
+
+            ex_text = _collect_text(example_copy)
+
+            # 移除 xt 标签（中文），避免混入英文
             if xt_tag:
                 xt_tag.decompose()
-
-            ex_text_parts: list[str] = []
-            for child in (example_copy or []).find_all(recursive=False):
-                if child.name == "span" and "cl" in child.get("class", []):
-                    ex_text_parts.append(child.get_text(strip=True))
-                elif child.name is None and child.strip():
-                    ex_text_parts.append(child.strip())
-
-            ex_text = " ".join(ex_text_parts).strip()
 
             examples.append({"text": ex_text, "chinese": chn_text})
 
