@@ -1,0 +1,3 @@
+interface:
+  display_name: "requirement-align"
+  short_description: "用户每发来一条新的请求，先做需求澄清"
