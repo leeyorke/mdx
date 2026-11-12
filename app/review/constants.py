@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import zlib
+from typing import Any, Mapping
+
 # ── 艾宾浩斯阶梯 ──────────────────────────────────────────────────────
 
 #: 经典的艾宾浩斯记忆间隔（分钟）。单词纯靠时间往上爬，评分只是微调。
@@ -25,6 +28,50 @@ SRS_INTERVALS_MINUTES: tuple[int, ...] = (
     11520, # 8 天
     17280, # 12 天
 )
+
+# ── 新词/老词分流（评分高推送频率低、评分低推送频率高）────────────────
+
+#: 走完阶梯（graduated）**或**爬到高阶且星级高（``star ≥`` OLD_WORD_STAR 且
+#: ``stage ≥`` OLD_WORD_STAGE）的词算「老词」。老词不再按阶梯天天推，而是概率
+#: 露头——star 是用户手动标、stage 是系统累积，两者结合才算真熟练。
+OLD_WORD_STAR = 4
+OLD_WORD_STAGE = 6
+
+#: 每天分配给老词「露头」的额度比例（占当天配额的 20%）。新词优先占
+#: ``1 - OLD_WORD_REVEAL_RATIO``，老词最多占这么多；老词抽不满时名额回流给
+#: 新词，绝不硬凑。
+OLD_WORD_REVEAL_RATIO = 0.20
+
+#: 老词每天被抽中露头的概率。用 ``word_id + 日期`` 做确定性哈希判定，同一个词
+#: 同一天结果稳定（重跑调度不会反复横跳），不同词/不同天彼此独立。
+OLD_WORD_REVEAL_PROBABILITY = 0.15
+
+#: 老词露头一次后的冷却天数——露完头就沉下去，隔一周左右才可能再现身。
+OLD_WORD_REVEAL_COOLDOWN_DAYS = 7
+
+
+def is_old_word(entry: Mapping[str, Any]) -> bool:
+    """一个词算「老词」吗：毕业了，或者星级与阶梯都爬上去了。
+
+    老词走概率露头（低频），新词/低星词按阶梯正常到期（高频）。
+    """
+    if entry.get("graduated"):
+        return True
+    return (
+        int(entry.get("star", 1) or 1) >= OLD_WORD_STAR
+        and int(entry.get("stage", 0) or 0) >= OLD_WORD_STAGE
+    )
+
+
+def roll_reveal(word_id: str, day_key: str) -> bool:
+    """今天该不该让这个词露头（确定性概率判定）。
+
+    把 ``word_id`` 和日期一起哈希，取值落在概率区间内就算命中。同一个词
+    同一天重跑结果一致——不会因为调度器多醒几次就反复横跳。
+    """
+    digest = zlib.crc32(f"{word_id}:{day_key}".encode("utf-8"))
+    return (digest % 10_000) < int(OLD_WORD_REVEAL_PROBABILITY * 10_000)
+
 
 # ── 调度节奏 ──────────────────────────────────────────────────────────
 

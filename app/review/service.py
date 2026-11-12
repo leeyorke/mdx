@@ -18,6 +18,7 @@ from app.dictionary import query_word
 from app.review.constants import (
     MAX_DEFERRALS_PER_TICK,
     MAX_QUEUE_SIZE,
+    OLD_WORD_REVEAL_RATIO,
     REVIEW_PAGE_URL,
     SRS_INTERVALS_MINUTES,
     VOCABULARY_PAGE_SIZE,
@@ -32,13 +33,16 @@ from app.review.schedule import (
     get_day_key,
     get_end_of_day_ms,
     get_next_notify_at,
+    get_reveal_cooldown_ms,
     get_start_of_day_ms,
     is_within_quiet_hours,
     pick_due_by,
     pick_due_entries,
     pick_next_pending_entry,
     pick_pending_entries,
+    pick_reveal_pool,
     pick_upcoming_entries,
+    split_new_and_old,
 )
 from app.review.store import (
     clear_schedule,
@@ -223,6 +227,39 @@ def get_last_sync_at() -> Optional[int]:
 # ── 调度 ────────────────────────────────────────────────────────────
 
 
+def _compose_push_batch(
+    schedule: Mapping[str, dict[str, Any]],
+    due: list[dict[str, Any]],
+    today_key: str,
+    day_start: int,
+    now: int,
+    remaining: int,
+) -> list[dict[str, Any]]:
+    """把今天到期的词按「新词优先 + 老词概率露头」合成一个推送批次。
+
+    - **新词**（未毕业、star/stage 都还没爬到老词线）按到期顺序占主力名额，
+      是配额里优先保障的部分；
+    - **老词**（毕业了，或 star ≥ OLD_WORD_STAR 且 stage ≥ OLD_WORD_STAGE）只有
+      在今天的概率抽签里命中才进来——这就是「偶尔现身一下」；名额上限是
+      ``remaining × OLD_WORD_REVEAL_RATIO``，**抽不满时名额自动回流给新词**，
+      绝不为凑比例硬塞；
+    - **已毕业**的老词不在 ``due`` 里（毕业即退出常规阶梯），单独从全队按概率
+      抽，露完头沉到冷却期，保证它们不会永远退休、但也不会天天刷屏。
+
+    返回的是队列里的原对象，调用方直接改它们并落库。
+    """
+    fresh, reveal = split_new_and_old(due, today_key, now)
+
+    # 已毕业的老词：单独抽签，名额算进露头上限里。
+    reveal_quota = max(1, int(remaining * OLD_WORD_REVEAL_RATIO))
+    graduated_pool = pick_reveal_pool(schedule, today_key, now, reveal_quota)
+    reveal = (reveal + graduated_pool)[:reveal_quota]
+
+    # 露头名额用不满就还给新词：新词吃掉剩余全部额度。
+    new_quota = max(0, remaining - len(reveal))
+    return reveal + fresh[:new_quota]
+
+
 def run_review_tick(now: Optional[int] = None) -> dict[str, Any]:
     """跑一轮调度：把今天到点的词合成**一条** Windows 通知推出去。
 
@@ -257,6 +294,7 @@ def run_review_tick(now: Optional[int] = None) -> dict[str, Any]:
     schedule = load_schedule()
     stats = prune_stats(load_stats(), now_dt)
     today_key = get_day_key(now_dt)
+    day_start = get_start_of_day_ms(now)
     stats.setdefault(today_key, {"total": 0, "per_word": {}})
 
     quiet_hours = config.get("quiet_hours", {})
@@ -297,8 +335,10 @@ def run_review_tick(now: Optional[int] = None) -> dict[str, Any]:
             outcome["stopped_because"] = "nothingDue"
 
         else:
-            batch = due[:remaining]
-            overflow = due[remaining:]
+            batch = _compose_push_batch(
+                schedule, due, today_key, day_start, now, remaining
+            )
+            overflow = [e for e in due if e not in batch]
             open_url = REVIEW_PAGE_URL
 
             try:

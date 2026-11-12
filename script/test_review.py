@@ -358,8 +358,13 @@ def test_next_times() -> None:
 
     graduated = {"a": make_entry(word_id="a", graduated=True)}
     check(
-        "全部毕业时没有唤醒点",
-        schedule.get_next_wakeup_at(graduated, config, NOW) is None,
+        "毕业词按露头冷却到期时间唤醒（不再永久沉默）",
+        schedule.get_next_wakeup_at(graduated, config, NOW) is not None,
+    )
+
+    check(
+        "空队列时没有唤醒点",
+        schedule.get_next_wakeup_at({}, config, NOW) is None,
     )
 
     overdue = {"a": make_entry(word_id="a", next_due_at=NOW - 10 * 60_000)}
@@ -387,8 +392,8 @@ def test_next_times() -> None:
         schedule.get_next_notify_at({}, config, {}, NOW) is None,
     )
     check(
-        "全部毕业 → 不响",
-        schedule.get_next_notify_at(graduated, config, {}, NOW) is None,
+        "毕业词仍会因露头冷却而提醒（不再永久退休）",
+        schedule.get_next_notify_at(graduated, config, {}, NOW) is not None,
     )
 
     # 今天没响过、此刻就到期 → 到期即响（至少 30 秒后）
@@ -799,6 +804,199 @@ def test_run_tick() -> None:
 def _three_due_words() -> dict:
     """三个今天到期的词（monetization / serendipity / luminate）→ {word_id: word}。"""
     return {e["word_id"]: e["word"] for e in store.load_schedule().values()}
+
+
+def test_new_old_split_and_reveal() -> None:
+    print("\n[12b] 新词/老词分流与概率露头")
+
+    from app.review.constants import (
+        OLD_WORD_REVEAL_COOLDOWN_DAYS,
+        OLD_WORD_REVEAL_RATIO,
+        is_old_word,
+        roll_reveal,
+    )
+
+    # ── 老词判定：毕业，或 star 与 stage 都爬上去（两者结合）──────────
+    check("毕业即老词", is_old_word(make_entry(graduated=True)) is True)
+    check(
+        "高星 + 高阶算老词",
+        is_old_word(make_entry(star=5, stage=8)) is True,
+    )
+    check(
+        "星高但阶低不算老词（还没爬上去）",
+        is_old_word(make_entry(star=5, stage=1)) is False,
+    )
+    check(
+        "阶高但星低不算老词（用户没标会）",
+        is_old_word(make_entry(star=1, stage=8)) is False,
+    )
+    check("新词不是老词", is_old_word(make_entry(star=3, stage=0)) is False)
+
+    # ── 概率露头：确定性，同词同天结果稳定 ───────────────────────────
+    check(
+        "同一词同一天抽签结果一致",
+        all(
+            roll_reveal("ephemeral", "2026-03-10")
+            == roll_reveal("ephemeral", "2026-03-10")
+            for _ in range(5)
+        ),
+    )
+    check(
+        "不同日期是独立的抽签",
+        len({roll_reveal("ephemeral", f"2026-03-{d:02d}") for d in range(1, 29)}) >= 2,
+    )
+
+    # ── 到期批次拆成新词 / 该露头的老词 ──────────────────────────────
+    due = [
+        make_entry(word_id="new1", star=2, stage=0, next_due_at=NOW - 1),
+        make_entry(word_id="new2", star=3, stage=1, next_due_at=NOW - 2),
+        make_entry(word_id="old1", star=5, stage=8, next_due_at=NOW - 3),
+    ]
+    with mock.patch.object(schedule, "roll_reveal", return_value=True):
+        fresh, reveal = schedule.split_new_and_old(due, "2026-03-10", NOW)
+    check(
+        "新词进 fresh 队，老词命中抽签进 reveal 队",
+        [e["word_id"] for e in fresh] == ["new1", "new2"]
+        and [e["word_id"] for e in reveal] == ["old1"],
+        (fresh, reveal),
+    )
+    with mock.patch.object(schedule, "roll_reveal", return_value=False):
+        fresh, reveal = schedule.split_new_and_old(due, "2026-03-10", NOW)
+    check(
+        "老词没命中抽签就留在新词队里照常推（避免漏推）",
+        [e["word_id"] for e in fresh] == ["new1", "new2", "old1"] and reveal == [],
+    )
+
+    # ── 已毕业的老词从全队按概率抽（毕业 ≠ 退休）────────────────────
+    # 冷却已到期（next_due_at <= now）才有资格被抽中。
+    entries = {
+        "grad1": make_entry(word_id="grad1", graduated=True, next_due_at=NOW - 1000),
+        "grad2": make_entry(word_id="grad2", graduated=True, next_due_at=NOW - 2000),
+        "cooling": make_entry(word_id="cooling", graduated=True, next_due_at=NOW + 60_000),
+        "active": make_entry(word_id="active", star=1, stage=0, next_due_at=NOW),
+    }
+    with mock.patch.object(schedule, "roll_reveal", return_value=True):
+        pool = schedule.pick_reveal_pool(entries, "2026-03-10", NOW, 5)
+    check(
+        "只抽冷却已到期的毕业词，冷却中的和未毕业的不掺进来",
+        [e["word_id"] for e in pool] == ["grad2", "grad1"],
+        pool,
+    )
+    with mock.patch.object(schedule, "roll_reveal", return_value=False):
+        check("没命中抽签时毕业词不露头", schedule.pick_reveal_pool(entries, "2026-03-10", NOW, 5) == [])
+
+    # ── 露头冷却：露完头沉到一周后 ──────────────────────────────────
+    advanced = schedule.advance_stage(make_entry(stage=2), "auto", NOW)
+    updated = schedule.apply_advanced_stage(
+        make_entry(stage=2, graduated=True), advanced, "stop", NOW
+    )
+    check(
+        "毕业词评分不再爬阶梯，只把到期时间推到冷却期",
+        updated["graduated"] is True
+        and updated["stage"] == 2
+        and updated["next_due_at"] == NOW + OLD_WORD_REVEAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000,
+        updated,
+    )
+
+    # ── 端到端：80/20 配额 + 名额回流 + 毕业词露头进批次 ─────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            for name, trans in (
+                ("serendipity", "n. 意外发现珍奇事物的运气"),
+                ("luminate", "v. 发亮"),
+                ("verdict", "n. 裁决"),
+            ):
+                _add_reviewed(name, trans)
+            service.sync_review_queue()
+
+            # 把其中两个推成毕业老词（star 5 / stage 顶 / graduated）
+            entries = list(store.load_schedule().values())
+            for entry in entries:
+                if entry["word"] in ("serendipity", "luminate"):
+                    entry["star"] = 5
+                    entry["stage"] = len(SRS_INTERVALS_MINUTES) - 1
+                    entry["graduated"] = True
+            store.upsert_schedule_entries(entries)
+            # 全部设成「冷却已到期」：毕业词才有资格被抽中，新词 verdict 今天到期
+            entries = list(store.load_schedule().values())
+            for entry in entries:
+                entry["next_due_at"] = NOW
+            store.upsert_schedule_entries(entries)
+
+            service.update_config(
+                {
+                    "enabled": True,
+                    "max_per_day": 10,
+                    "quiet_hours": {"enabled": False, "start": "23:00", "end": "08:00"},
+                }
+            )
+
+            calls: list[dict] = []
+
+            def fake_notify(count, words, launch_url):
+                calls.append({"count": count, "words": list(words)})
+                return True
+
+            # 露头抽签全命中：max_per_day=10 → 露头名额 2（两个毕业词）+ 新词回流
+            with mock.patch.object(schedule, "roll_reveal", return_value=True):
+                with mock.patch.object(service, "send_batch_notification", fake_notify):
+                    outcome = service.run_review_tick(now=NOW)
+            check(
+                "毕业老词概率露头时进批次（毕业不等于退休）",
+                outcome["pushed"] == 1 and outcome["words"] == 4,
+                outcome,
+            )
+            pushed = set(calls[0]["words"])
+            check(
+                "批次里既有毕业老词也有新词",
+                {"verdict", "monetization"} <= pushed
+                and {"serendipity", "luminate"} <= pushed,
+                pushed,
+            )
+            after = {e["word"]: e for e in store.load_schedule().values()}
+            cooldown = NOW + OLD_WORD_REVEAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000
+            check(
+                "露头后的毕业词沉到一周后的冷却期",
+                after["serendipity"]["next_due_at"] == cooldown
+                and after["luminate"]["graduated"] is True,
+                after["serendipity"],
+            )
+            check(
+                "露头照常计入当天额度",
+                store.load_stats().get("2026-03-10", {}).get("total") == 4,
+            )
+
+            # 露头抽签全不命中：毕业词不出现，名额回流给新词
+            store.clear_schedule()
+            store.save_stats({})
+            service.sync_review_queue()
+            entries = list(store.load_schedule().values())
+            for entry in entries:
+                if entry["word"] in ("serendipity", "luminate"):
+                    entry["star"] = 5
+                    entry["stage"] = len(SRS_INTERVALS_MINUTES) - 1
+                    entry["graduated"] = True
+                else:
+                    entry["next_due_at"] = NOW
+            store.upsert_schedule_entries(entries)
+            calls.clear()
+            with mock.patch.object(schedule, "roll_reveal", return_value=False):
+                with mock.patch.object(service, "send_batch_notification", fake_notify):
+                    outcome = service.run_review_tick(now=NOW)
+            check(
+                "毕业词没命中抽签就不露头，批次只剩新词",
+                outcome["words"] == 2
+                and set(calls[0]["words"]) == {"verdict", "monetization"},
+                outcome,
+            )
+
+            # 露头名额上限 = remaining × ratio（max_per_day=10 → 2 个）
+            check(
+                "露头名额上限符合 80/20 比例",
+                int(10 * OLD_WORD_REVEAL_RATIO) == 2,
+            )
 
 
 def test_session() -> None:
@@ -1544,6 +1742,7 @@ def main() -> int:
     test_store_migration()
     test_sync_queue()
     test_run_tick()
+    test_new_old_split_and_reveal()
     test_session()
     test_rate_and_card()
     test_refresh_example()

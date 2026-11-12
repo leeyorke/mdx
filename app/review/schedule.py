@@ -20,7 +20,10 @@ from app.review.constants import (
     BACKOFF_BASE_MINUTES,
     BACKOFF_MAX_MINUTES,
     MIN_WAKEUP_DELAY_MS,
+    OLD_WORD_REVEAL_COOLDOWN_DAYS,
     SRS_INTERVALS_MINUTES,
+    is_old_word,
+    roll_reveal,
 )
 
 MAX_STAGE = len(SRS_INTERVALS_MINUTES) - 1
@@ -38,6 +41,15 @@ def clamp_stage(stage: int) -> int:
 def interval_at(stage: int) -> int:
     """某一阶段的间隔（毫秒）。"""
     return SRS_INTERVALS_MINUTES[clamp_stage(stage)] * 60_000
+
+
+def get_reveal_cooldown_ms(now: int) -> int:
+    """老词露头一次后的下次到期时刻（毫秒时间戳）。
+
+    露完头就沉下去，隔 ``OLD_WORD_REVEAL_COOLDOWN_DAYS`` 天才可能再被抽中，
+    正是「隔一周、或 10 天偶尔现身一下」的那个间隔。
+    """
+    return now + OLD_WORD_REVEAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000
 
 
 def get_interval_ms(stage: int) -> int:
@@ -93,8 +105,18 @@ def apply_advanced_stage(
     graduated_action: str,
     now: int,
 ) -> dict[str, Any]:
-    """把推进结果写回词条（返回新字典）。"""
+    """把推进结果写回词条（返回新字典）。
+
+    已经毕业的词（``graduated``）走的是「概率露头」通道，不再按阶梯推进：
+    无论 ``graduated_action`` 是 stop 还是 restart，露头之后都只把到期时间
+    推到冷却期结束、保持毕业状态——既不会 stop 后永远退休，也不会被 restart
+    拉回 5 分钟重新爬一遍阶梯。
+    """
     updated = dict(entry)
+
+    if updated.get("graduated"):
+        updated["next_due_at"] = get_reveal_cooldown_ms(now)
+        return updated
 
     if not advanced.graduated:
         updated["stage"] = advanced.stage
@@ -111,6 +133,8 @@ def apply_advanced_stage(
 
     updated["stage"] = advanced.stage
     updated["graduated"] = True
+    # 刚毕业：先按露头冷却沉下去，而不是立刻又被当成到期词。
+    updated["next_due_at"] = get_reveal_cooldown_ms(now)
     return updated
 
 
@@ -146,6 +170,70 @@ def pick_due_entries(
         )
     )
     return due[: max(0, limit)]
+
+
+def split_new_and_old(
+    due: list[dict[str, Any]],
+    day_key: str,
+    now: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """把到期批次拆成「新词」和「今天该露头的老词」两队。
+
+    - 新词（未毕业、且 star/stage 还没爬到老词线）：按到期顺序照常推，是
+      配额里的主力；
+    - 老词（毕业了，或 star ≥ OLD_WORD_STAR 且 stage ≥ OLD_WORD_STAGE）：只有
+      在今天的概率抽签里命中（:func:`constants.roll_reveal`）才进队——这就是
+      「偶尔现身一下」，露完头由调用方把它沉到冷却期。
+
+    ``day_key`` 让抽签按日历日确定性判定，同一天重跑结果一致。
+
+    老词没命中抽签时**退回常规队列照常推**（而不是丢掉）——露头只是额外的
+    加成，不能因为今天没抽中就让这个词彻底消失。
+    """
+    fresh: list[dict[str, Any]] = []
+    reveal: list[dict[str, Any]] = []
+    for entry in due:
+        if is_old_word(entry) and roll_reveal(str(entry.get("word_id", "")), day_key):
+            reveal.append(entry)
+        else:
+            fresh.append(entry)
+    return fresh, reveal
+
+
+def pick_reveal_pool(
+    entries: Mapping[str, dict[str, Any]],
+    day_key: str,
+    now: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """从整个队列里挑出今天该露头的**已毕业**老词。
+
+    毕业词不再有常规的「到期」概念（露完头就沉到冷却期），所以单独扫全表、
+    按概率抽签，最多返回 ``limit`` 个。两个门槛：
+
+    - **冷却已到期**（``next_due_at <= now``）——刚露完头的词沉在冷却期里，
+      不会天天被抽中，这正是「隔一周、或 10 天偶尔现身一下」；
+    - **今天还没评分过**——一天一轮，露头后进会话评分，当天不再重复。
+
+    未毕业的词不掺进来（它们走常规阶梯，由 ``pick_due_entries`` 负责）。
+    """
+    day_start = get_start_of_day_ms(now)
+    hits = [
+        entry
+        for entry in entries.values()
+        if entry.get("graduated")
+        and int(entry.get("next_due_at", 0)) <= now
+        and not _rated_today(entry, day_start)
+        and roll_reveal(str(entry.get("word_id", "")), day_key)
+    ]
+    hits.sort(
+        key=lambda e: (
+            int(e.get("next_due_at", 0)),
+            int(e.get("star", 1)),
+            str(e.get("word_id", "")),
+        )
+    )
+    return hits[: max(0, limit)]
 
 
 def parse_time_to_minutes(value: str) -> int:
@@ -235,11 +323,13 @@ def get_next_wakeup_at(
 
     免打扰时段会把唤醒时间推后，而不是简单地跳过这一次。返回的时刻不会比
     ``now + MIN_WAKEUP_DELAY_MS`` 更近——否则一堆同时到期的词会变成热循环。
+
+    已毕业的老词也计入唤醒候选：它们的 ``next_due_at`` 是露头冷却的到期时刻，
+    到点了调度器得醒来跑一次概率抽签，否则毕业词会永远沉睡、再也不会露头。
     """
     pending = [
         int(entry.get("next_due_at", 0))
         for entry in entries.values()
-        if not entry.get("graduated")
     ]
     if not pending:
         return None
@@ -271,10 +361,10 @@ def get_next_notify_at(
     if not review_config.get("enabled"):
         return None
 
+    # 已毕业的老词也计入：它们靠概率露头，冷却到期后同样可能触发下一次提醒。
     pending = [
         int(entry.get("next_due_at", 0))
         for entry in entries.values()
-        if not entry.get("graduated")
     ]
     if not pending:
         return None
