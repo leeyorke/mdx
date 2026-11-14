@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from app.dictionary import query_word
 from app.review.constants import (
+    DEFAULT_NEW_WORD_RATIO,
     MAX_DEFERRALS_PER_TICK,
     MAX_QUEUE_SIZE,
     OLD_WORD_REVEAL_RATIO,
@@ -36,6 +37,7 @@ from app.review.schedule import (
     get_reveal_cooldown_ms,
     get_start_of_day_ms,
     is_within_quiet_hours,
+    new_word_allowance,
     pick_due_by,
     pick_due_entries,
     pick_next_pending_entry,
@@ -57,13 +59,27 @@ from app.review.store import (
     save_stats,
     upsert_schedule_entries,
 )
-from app.vocabulary import list_reviewed_words
+from app.vocabulary import (
+    count_words,
+    get_word,
+    list_reviewed_words,
+    list_unreviewed_words,
+)
 
 log = logging.getLogger("app.review.service")
 
 
 def _now_ms() -> int:
     return int(datetime.now().timestamp() * 1000)
+
+
+def _clamp_new_word_ratio(value: Any) -> float:
+    """读出来的生词占比夹到 ``[0, 1]``；非法值回落默认 0.80。"""
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_NEW_WORD_RATIO
+    return max(0.0, min(1.0, ratio))
 
 
 # ── 配置 ────────────────────────────────────────────────────────────
@@ -146,10 +162,69 @@ def _fetch_reviewed_words() -> list[dict[str, Any]]:
     return words[:MAX_QUEUE_SIZE]
 
 
+def _new_word_to_card(record: Mapping[str, Any]) -> dict[str, Any]:
+    """把生词本记录转成一张「尚未入档案的生词卡」。
+
+    形状与 ``review_schedule`` 词条兼容（``build_card_data`` 能直接吃），但
+    ``stage = 0``、``graduated = False``、``is_new = True``。**它不是队列词条**：
+    生词不提前写 ``review_schedule``（否则会被 :func:`sync_review_queue` 删掉），
+    只在首次评分（:func:`rate_word`）时才正式建档。
+    """
+    return {
+        "word_id": record["id"],
+        "word": record.get("word", ""),
+        "translation": record.get("translation", ""),
+        "context_text": record.get("context_text"),
+        "context_url": record.get("context_url"),
+        "source_language": record.get("source_language"),
+        "target_language": record.get("target_language"),
+        "star": int(record.get("star", 1) or 1),
+        "stage": 0,
+        "graduated": False,
+        "is_new": True,
+    }
+
+
+def _pick_new_words(limit: int, exclude_ids: Iterable[str] = ()) -> list[dict[str, Any]]:
+    """按 FIFO（最久收藏优先）抽 ``limit`` 个生词，跳过 ``exclude_ids``。
+
+    生词 = ``last_reviewed_at IS NULL``（从未在闪卡里过过）的词。分页拉取、
+    跳过已在会话/批次里的词，最多返回 ``limit`` 个。返回的是**卡片形状**
+    （:func:`_new_word_to_card`），可直接喂 ``build_card_data`` / 进会话队列。
+    """
+    limit = max(0, int(limit))
+    if limit == 0:
+        return []
+
+    excluded = set(exclude_ids)
+    picked: list[dict[str, Any]] = []
+    offset = 0
+
+    while len(picked) < limit:
+        page = list_unreviewed_words(limit=VOCABULARY_PAGE_SIZE, offset=offset)
+        if not page:
+            break
+        for record in page:
+            if len(picked) >= limit:
+                break
+            if record["id"] in excluded:
+                continue
+            picked.append(_new_word_to_card(record))
+        offset += len(page)
+        if len(page) < VOCABULARY_PAGE_SIZE:
+            break
+
+    return picked
+
+
 def sync_review_queue() -> dict[str, Any]:
     """用生词本对齐复习队列。
 
     新词条从阶梯 0 开始、立刻到期；已有词条保留调度状态，只刷新快照字段。
+
+    注意：这里**只收「至少复习过一次」的词**（``list_reviewed_words``）。生词
+    （``review_count = 0``）不提前建档——它们由 :func:`_pick_new_words` 按需抽进
+    会话/通知，首次评分时才建档案，所以不会被这里的删除逻辑误伤。
     """
     now = _now_ms()
     schedule = load_schedule()
@@ -234,19 +309,22 @@ def _compose_push_batch(
     day_start: int,
     now: int,
     remaining: int,
-) -> list[dict[str, Any]]:
-    """把今天到期的词按「新词优先 + 老词概率露头」合成一个推送批次。
+    new_word_ratio: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """把今天的推送批次合成「**到期旧词优先 + 生词补位**」。
 
-    - **新词**（未毕业、star/stage 都还没爬到老词线）按到期顺序占主力名额，
-      是配额里优先保障的部分；
-    - **老词**（毕业了，或 star ≥ OLD_WORD_STAR 且 stage ≥ OLD_WORD_STAGE）只有
-      在今天的概率抽签里命中才进来——这就是「偶尔现身一下」；名额上限是
-      ``remaining × OLD_WORD_REVEAL_RATIO``，**抽不满时名额自动回流给新词**，
-      绝不为凑比例硬塞；
-    - **已毕业**的老词不在 ``due`` 里（毕业即退出常规阶梯），单独从全队按概率
-      抽，露完头沉到冷却期，保证它们不会永远退休、但也不会天天刷屏。
+    返回 ``(旧词词条, 生词卡片)``：
 
-    返回的是队列里的原对象，调用方直接改它们并落库。
+    - **旧词词条**（阶梯到期词 + 命中抽签的毕业露头词）是 ``review_schedule`` 里的
+      原对象，调用方推进阶梯并落库；
+    - **生词卡片**（``review_count = 0`` 待接入的词）不在 ``review_schedule`` 里，
+      **绝不提前建档**（否则会被 :func:`sync_review_queue` 删掉），只进通知文案、
+      不推进阶梯——用户在会话里首次评分时才正式建档。
+
+    分配规则（见 :func:`schedule.new_word_allowance`）：旧词优先占名额（保住记忆
+    曲线），生词按占比补剩余；旧词稀缺时生词越过上限把当天额度填满。
+
+    ``day_start`` 目前不参与分流，保留以兼容调用方签名。
     """
     fresh, reveal = split_new_and_old(due, today_key, now)
 
@@ -255,9 +333,15 @@ def _compose_push_batch(
     graduated_pool = pick_reveal_pool(schedule, today_key, now, reveal_quota)
     reveal = (reveal + graduated_pool)[:reveal_quota]
 
-    # 露头名额用不满就还给新词：新词吃掉剩余全部额度。
-    new_quota = max(0, remaining - len(reveal))
-    return reveal + fresh[:new_quota]
+    # 旧词优先：露头词 + 到期阶梯词，最多占满当天剩余额度。
+    old_batch = (reveal + fresh)[: max(0, remaining)]
+
+    # 生词补位：旧词占不满的部分给生词（受占比上限约束，旧词稀缺时可越上限填满）。
+    allowance = new_word_allowance(remaining, len(old_batch), new_word_ratio)
+    exclude = {entry["word_id"] for entry in old_batch}
+    new_words = _pick_new_words(allowance, exclude_ids=exclude)
+
+    return old_batch, new_words
 
 
 def run_review_tick(now: Optional[int] = None) -> dict[str, Any]:
@@ -331,68 +415,84 @@ def run_review_tick(now: Optional[int] = None) -> dict[str, Any]:
             outcome["stopped_because"] = "alreadyNotified"
             dirty = True
 
-        elif not due:
-            outcome["stopped_because"] = "nothingDue"
-
         else:
-            batch = _compose_push_batch(
-                schedule, due, today_key, day_start, now, remaining
+            new_word_ratio = _clamp_new_word_ratio(config.get("new_word_ratio"))
+            batch, batch_new = _compose_push_batch(
+                schedule, due, today_key, day_start, now, remaining, new_word_ratio
             )
-            overflow = [e for e in due if e not in batch]
-            open_url = REVIEW_PAGE_URL
+            batch_count = len(batch) + len(batch_new)
 
-            try:
-                delivered = send_batch_notification(
-                    count=len(batch),
-                    words=[str(entry.get("word", "")) for entry in batch],
-                    launch_url=open_url,
-                )
-                if not delivered:
-                    raise RuntimeError("Windows 通知发送失败")
-
-                for candidate in batch:
-                    advanced = advance_stage(candidate, "auto", now)
-                    candidate.update(
-                        apply_advanced_stage(
-                            candidate,
-                            advanced,
-                            str(config.get("graduated_action", "stop")),
-                            now,
-                        )
-                    )
-                    candidate["last_notified_at"] = now
-                    candidate["push_count"] = int(candidate.get("push_count", 0)) + 1
-                    candidate["failure_count"] = 0
-                    # 已推送但还没评分：复习会话按这个标记往下走。
-                    candidate["pending_review"] = True
-
-                    word_id = candidate["word_id"]
-                    stats[today_key]["total"] += 1
-                    per_word = stats[today_key]["per_word"]
-                    per_word[word_id] = int(per_word.get(word_id, 0)) + 1
-
-                outcome["pushed"] = 1
-                outcome["words"] = len(batch)
-                dirty = True
-
-            except Exception as exc:  # noqa: BLE001
-                # 推送失败不能吃掉这个词在阶梯上的位置，也不占当天额度。
-                for candidate in batch:
-                    failure_count = int(candidate.get("failure_count", 0)) + 1
-                    candidate["failure_count"] = failure_count
-                    candidate["next_due_at"] = now + get_backoff_ms(failure_count - 1)
-                outcome["failed"] = len(batch)
-                dirty = True
-                log.warning("推送复习提醒失败（%d 个词）：%s", len(batch), exc)
-
+            if batch_count == 0:
+                # 既没有到期旧词、也抽不到生词（生词本空）——真没词可推。
+                outcome["stopped_because"] = "nothingDue"
             else:
-                # 通知成功了，但今天额度也正好用完：超额的词推迟到今天结束，
-                # 明天零点后优先补上。
-                if overflow:
-                    end_of_today = get_end_of_day_ms(now)
-                    for entry in overflow:
-                        entry["next_due_at"] = end_of_today
-                    outcome["deferred"] = len(overflow)
+                overflow = [e for e in due if e not in batch]
+                open_url = REVIEW_PAGE_URL
+                # 通知文案 = 旧词 + 生词；生词只是「预告」，不建档。
+                notify_words = [str(e.get("word", "")) for e in batch] + [
+                    str(w.get("word", "")) for w in batch_new
+                ]
+
+                try:
+                    delivered = send_batch_notification(
+                        count=batch_count,
+                        words=notify_words,
+                        launch_url=open_url,
+                    )
+                    if not delivered:
+                        raise RuntimeError("Windows 通知发送失败")
+
+                    # 只推进旧词的阶梯；生词不在 review_schedule 里，不建档不推进
+                    # （首次评分时 rate_word 才建卡）。
+                    for candidate in batch:
+                        advanced = advance_stage(candidate, "auto", now)
+                        candidate.update(
+                            apply_advanced_stage(
+                                candidate,
+                                advanced,
+                                str(config.get("graduated_action", "stop")),
+                                now,
+                            )
+                        )
+                        candidate["last_notified_at"] = now
+                        candidate["push_count"] = int(candidate.get("push_count", 0)) + 1
+                        candidate["failure_count"] = 0
+                        # 已推送但还没评分：复习会话按这个标记往下走。
+                        candidate["pending_review"] = True
+
+                    # 统计记下整批词数（旧词 + 生词）：驱动「一天一次」与剩余额度。
+                    per_word = stats[today_key]["per_word"]
+                    for entry in batch:
+                        wid = entry["word_id"]
+                        per_word[wid] = int(per_word.get(wid, 0)) + 1
+                    for fresh_card in batch_new:
+                        wid = fresh_card["word_id"]
+                        per_word[wid] = int(per_word.get(wid, 0)) + 1
+                    stats[today_key]["total"] += batch_count
+
+                    outcome["pushed"] = 1
+                    outcome["words"] = batch_count
+                    dirty = True
+
+                except Exception as exc:  # noqa: BLE001
+                    # 推送失败不能吃掉旧词在阶梯上的位置，也不占当天额度。
+                    # 生词不在队列里，无需退避——下次照旧按 FIFO 抽。
+                    for candidate in batch:
+                        failure_count = int(candidate.get("failure_count", 0)) + 1
+                        candidate["failure_count"] = failure_count
+                        candidate["next_due_at"] = now + get_backoff_ms(failure_count - 1)
+                    outcome["failed"] = batch_count
+                    dirty = True
+                    log.warning("推送复习提醒失败（%d 个词）：%s", batch_count, exc)
+
+                else:
+                    # 通知成功了，但今天额度也正好用完：超额的词推迟到今天结束，
+                    # 明天零点后优先补上。
+                    if overflow:
+                        end_of_today = get_end_of_day_ms(now)
+                        for entry in overflow:
+                            entry["next_due_at"] = end_of_today
+                        outcome["deferred"] = len(overflow)
 
     if (
         outcome["stopped_because"] is None
@@ -425,12 +525,16 @@ def _compose_session(
     """按模式挑出本次会话的词条（不发通知、不碰数据库）。
 
     - ``auto``（通知点进来 / 打开页面）：上次提醒还没评分的词 + 今天到期
-      且今天没复习过的词，受今天剩余额度限制——"今天要复习的量"；
+      且今天没复习过的词（受今天剩余额度限制），再用**生词补位**凑足一天配额
+      ——这就是"今天要复习的量"；
     - ``manual``（「立即复习」）：同样这两类，但**不受额度与免打扰限制**；
-      不足一天配额时用即将到期的词补齐，补齐的打 ``early`` 标记；连"即将
-      到期"都没有（全队的词今天都复习过了）时，也允许把今天复习过的词按
-      最快到期补进来——手动会话本来就是"我想现在再练一组"，否则晚上再点
-      「再来一组」只会空转。
+      先补生词（生词优先于提前复习的阶梯词），不足一天配额再用即将到期的词
+      补齐，补齐的打 ``early`` 标记；连"即将到期"都没有（全队的词今天都复习过
+      了）时，也允许把今天复习过的词按最快到期补进来——手动会话本来就是"我想
+      现在再练一组"，否则晚上再点「再来一组」只会空转。
+
+    生词（``review_count = 0`` 待接入）由 :func:`_pick_new_words` 按 FIFO 补进来，
+    带 ``is_new`` 标记；它们不在 ``review_schedule`` 里，首次评分时才建档。
 
     队列由页面自己拿着走，服务端不存会话状态：刷新页面、开两个标签页都
     不会把队列走丢或串台。
@@ -442,6 +546,7 @@ def _compose_session(
     today_notified = int(stats.get(get_day_key(now_dt), {}).get("total", 0))
     max_per_day = max(1, int(config.get("max_per_day", 8)))
     remaining = max(0, max_per_day - today_notified)
+    new_word_ratio = _clamp_new_word_ratio(config.get("new_word_ratio"))
 
     pending = pick_pending_entries(schedule)
     pending_ids = {entry["word_id"] for entry in pending}
@@ -458,9 +563,14 @@ def _compose_session(
     early_ids: set[str] = set()
     if mode == "manual":
         chosen = pending + due
+        # 生词优先于「提前复习」的阶梯词：先补生词。
+        allowance = new_word_allowance(max_per_day, len(chosen), new_word_ratio)
+        chosen += _pick_new_words(
+            allowance, exclude_ids={entry["word_id"] for entry in chosen}
+        )
         if len(chosen) < max_per_day:
             excluded = {entry["word_id"] for entry in chosen}
-            # 先补「还没到期、今天也没复习过」的词：提前复习，"一天一轮"照旧优先
+            # 再补「还没到期、今天也没复习过」的阶梯词：提前复习，"一天一轮"照旧优先
             fill = pick_upcoming_entries(
                 schedule,
                 now,
@@ -483,6 +593,11 @@ def _compose_session(
             chosen += fill
     else:
         chosen = pending + due[:remaining]
+        # 生词补位：把当天配额里旧词占不满的部分补给生词（受占比上限约束）。
+        allowance = new_word_allowance(max_per_day, len(chosen), new_word_ratio)
+        chosen += _pick_new_words(
+            allowance, exclude_ids={entry["word_id"] for entry in chosen}
+        )
 
     return (
         chosen,
@@ -512,6 +627,8 @@ def build_session(mode: str = "auto", now: Optional[int] = None) -> dict[str, An
             "word_id": entry["word_id"],
             "word": entry.get("word", ""),
             "early": entry["word_id"] in early_ids,
+            # 生词（首次曝光、还没入 SRS 档案）带标记，页面可显示「新词」角标。
+            "is_new": bool(entry.get("is_new")),
         }
         for entry in chosen
     ]
@@ -601,6 +718,10 @@ def rate_word(
     评分和取下一张卡片放在一次调用里：复习是「看 → 判断 → 下一张」的紧凑循环，
     分成两次往返会在每张卡片之间插进一段可见的加载态。``next_word_id`` 由
     页面手里的会话队列提供——队列归页面，服务端不存会话状态。
+
+    **生词首评建档**：生词（``review_count = 0``）不提前写 ``review_schedule``，
+    所以第一次评分时它还没有档案——这里现场建一条（阶梯 0、立刻到期）再推进。
+    这一步把生词正式纳入 SRS，之后它 ``review_count ≥ 1``、走常规阶梯同步。
     """
     if kind not in ("remembered", "forgotten"):
         raise ValueError("评分只能是 remembered 或 forgotten")
@@ -610,7 +731,12 @@ def rate_word(
 
     entry = get_schedule_entry(word_id)
     if not entry:
-        return None
+        # 生词首次评分：还没有 SRS 档案，现场建一条。词不在生词本（历史遗留 /
+        # 已删除）时无从建档，保持旧行为返回 None。
+        word = get_word(word_id)
+        if not word:
+            return None
+        entry = _create_entry(word, now)
 
     advanced = advance_stage(entry, kind, now)
     updated = apply_advanced_stage(
@@ -735,6 +861,9 @@ def get_status() -> dict[str, Any]:
         "graduated_count": len(entries) - len(pending),
         # 现在点「立即复习」/ 打开页面能直接复习多少个词
         "due_count": len(chosen),
+        # 生词本总数：磁贴「计划总数」显示的是它（库存），queue_size 仍在
+        # payload 里驱动 CTA 禁用与空态逻辑。
+        "vocab_total": count_words(),
         "pending_count": count_pending_entries(schedule),
         "today_rated": count_rated_today(schedule, day_start),
         "today_notified": int(stats.get(today_key, {}).get("total", 0)),

@@ -236,6 +236,37 @@ def pick_reveal_pool(
     return hits[: max(0, limit)]
 
 
+def new_word_allowance(total_slots: int, old_count: int, new_word_ratio: float) -> int:
+    """当天还剩多少名额给「生词」（``review_count = 0`` 待接入的词）。
+
+    规则（旧词优先、生词补位、不浪费额度）：
+
+    - 旧词已经占掉 ``old_count`` 个名额（到期阶梯词 + 毕业露头词），生词补剩余；
+    - 生词名额默认不超过 ``total_slots × new_word_ratio``——这个上限其实是给旧词
+      **预留份额**（``total_slots - cap``）：旧词优先占位，别被生词挤掉记忆曲线；
+    - **旧词稀缺**（占不到自己的预留份额）时，生词可越过占比上限把当天额度填满，
+      绝不为凑比例浪费名额。
+
+    纯函数，方便单测。
+    """
+    total_slots = max(0, int(total_slots))
+    old_count = max(0, int(old_count))
+    ratio = max(0.0, min(1.0, float(new_word_ratio)))
+    new_fill = max(0, total_slots - old_count)
+
+    if ratio <= 0:
+        return 0
+    if ratio >= 1:
+        return new_fill
+
+    cap = int(total_slots * ratio)
+    reserved_old = total_slots - cap
+    if old_count >= reserved_old:
+        return min(new_fill, cap)
+    # 旧词稀缺：生词吃掉旧词让出来的名额，越过上限把当天额度填满。
+    return new_fill
+
+
 def parse_time_to_minutes(value: str) -> int:
     """``HH:mm`` → 当天零点起的分钟数；格式不对按 0 处理。"""
     match = _TIME_RE.match(value or "")

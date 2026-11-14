@@ -15,6 +15,9 @@
 10. 复习会话：auto 受剩余额度限制、manual 不受限 + 提前复习补齐（含今天全复习完
     时 manual 仍凑得出一组，「再来一组」不空转）
 11. 评分（记得 / 忘了，带 next_word_id）与例句按需生成（含固定搭配的中文意思）
+11b. 生词接入：生词名额分配纯函数、FIFO 抽词（exclude / 复习过的不算）、首评建档、
+    通知批次「旧词优先 + 生词补位 / 旧词稀缺时越上限填满」、会话生词补位 + is_new、
+    new_word_ratio 读写与夹取、status.vocab_total
 12. LLM 请求头（OpenRouter 归属头）、代理环境变量与 NO_PROXY 坑、REST 接口与复习页面（no-cache + 例句预加载）
 
 运行: uv run python -X utf8 script/test_review.py
@@ -560,17 +563,27 @@ def test_store_migration() -> None:
 
 
 def _make_vocabulary(db_path: Path) -> None:
-    """造一份生词库：一个复习过的、一个没复习的。"""
+    """造一份生词库：只有一个「复习过一次」的词（monetization）。
+
+    原来的夹具还会造一个没复习过的 ephemeral——生词接入上线后它会进批次/会话，
+    把既有的「纯阶梯 / 露头 / 会话额度」测试全搅乱。所以默认夹具只留复习过的词；
+    生词（review_count=0 待接入）是新增能力，专门在 :func:`test_new_word_intake`
+    里用 ``vocabulary.add_word``（不 review）造未复习的词来测。
+    """
     vocabulary.DB_FILE = db_path
-    vocabulary.add_word("ephemeral", "adj. 短暂的")
-    reviewed, _created = vocabulary.add_word("monetization", "货币化")
-    vocabulary.review_word(reviewed["id"])
+    _add_reviewed("monetization", "货币化")
 
 
 def _add_reviewed(word: str, translation: str) -> str:
     """再加一个「复习过一次」的生词，返回它的 ID。"""
     record, _created = vocabulary.add_word(word, translation)
     vocabulary.review_word(record["id"])
+    return record["id"]
+
+
+def _add_new(word: str, translation: str) -> str:
+    """加一个「从未复习过」的生词（生词接入的测试夹具），返回它的 ID。"""
+    record, _created = vocabulary.add_word(word, translation)
     return record["id"]
 
 
@@ -597,10 +610,19 @@ def test_sync_queue() -> None:
         db_path = Path(tmp) / "review.db"
         with mock.patch.object(store, "DB_FILE", db_path):
             _make_vocabulary(db_path)
+            # 一个从未复习过的生词：不该被收进 SRS 队列（生词走 intake 接入，
+            # 不提前建档，否则会被这里的删除逻辑误删）。
+            _add_new("brandnew", "全新的")
             result = service.sync_review_queue()
 
             check("只收复习过的词", result["total"] == 1, result)
             check("新增计数正确", result["added"] == 1, result)
+            synced_words = {e["word"] for e in store.load_schedule().values()}
+            check(
+                "未复习的生词不进队列",
+                "brandnew" not in synced_words and synced_words == {"monetization"},
+                synced_words,
+            )
 
             schedule_state = store.load_schedule()
             entry = next(iter(schedule_state.values()))
@@ -1189,6 +1211,203 @@ def test_session() -> None:
             )
 
 
+def test_new_word_intake() -> None:
+    print("\n[13b] 生词接入（review_count=0 的词自动进复习）")
+
+    from app.review.schedule import new_word_allowance
+
+    # ── 纯函数：生词名额分配（旧词优先、生词补位、不浪费额度）──────────
+    check(
+        "旧词占满预留份额 → 生词受 80% 上限",
+        new_word_allowance(10, 2, 0.8) == 8,
+        new_word_allowance(10, 2, 0.8),
+    )
+    check(
+        "旧词更多 → 生词补剩余",
+        new_word_allowance(10, 5, 0.8) == 5,
+    )
+    check(
+        "旧词占满全部额度 → 生词为 0",
+        new_word_allowance(10, 10, 0.8) == 0,
+    )
+    check(
+        "旧词稀缺 → 生词越过上限填满（不浪费额度）",
+        new_word_allowance(10, 0, 0.8) == 10
+        and new_word_allowance(10, 1, 0.8) == 9,
+    )
+    check("占比 0 → 不出生词", new_word_allowance(10, 0, 0.0) == 0)
+    check("占比 1 → 全给生词", new_word_allowance(10, 3, 1.0) == 7)
+
+    # ── 生词抽词：FIFO、exclude_ids、复习过的不算生词 ─────────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            vocabulary.DB_FILE = db_path
+            a = _add_new("apple", "苹果")       # 最早收藏
+            _add_new("banana", "香蕉")
+            _add_new("cherry", "樱桃")
+            _add_reviewed("date", "枣")          # 复习过 → 不算生词
+
+            picked = service._pick_new_words(10)
+            check(
+                "FIFO 最久收藏优先",
+                [p["word"] for p in picked] == ["apple", "banana", "cherry"],
+                [p["word"] for p in picked],
+            )
+            check("复习过的词不被当生词抽", "date" not in {p["word"] for p in picked})
+
+            picked = service._pick_new_words(10, exclude_ids={a})
+            check(
+                "exclude_ids 跳过已选词",
+                [p["word"] for p in picked] == ["banana", "cherry"],
+                [p["word"] for p in picked],
+            )
+
+            picked = service._pick_new_words(1)
+            check("遵守数量上限", [p["word"] for p in picked] == ["apple"], picked)
+
+            card = service._pick_new_words(1)[0]
+            check(
+                "生词卡片是未建档形状",
+                card["is_new"] is True and card["stage"] == 0 and card["graduated"] is False,
+                card,
+            )
+
+    # ── 首评建档：生词第一次评分时正式进 SRS ─────────────────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            new_id = _add_new("brandnew", "全新的")
+            check("生词还没进 SRS 队列", store.get_schedule_entry(new_id) is None)
+
+            # 评分前能组出卡片（生词照查词典、stage=0）
+            card = service.build_card_data(
+                service._new_word_to_card(vocabulary.get_word(new_id)), 1
+            )
+            check("生词能组卡片", card["word"] == "brandnew" and card["stage"] == 0, card)
+
+            # 首次评分 → 现场建档 + 推进阶梯 + 回写生词本
+            service.rate_word(new_id, "remembered")
+            entry = store.get_schedule_entry(new_id)
+            check("首评后建档并推进阶梯", entry is not None and entry["stage"] == 2, entry)
+            check("首评回写生词本 review_count+1", vocabulary.get_word(new_id)["review_count"] == 1)
+
+            # 建档后经 sync 不会被删（已 review_count≥1）
+            sync = service.sync_review_queue()
+            check("首评建档的词经同步保留", new_id in store.load_schedule(), sync)
+
+            # 词不在生词本 → 优雅返回 None
+            check("给不在生词本的词评分返回 None", service.rate_word("nope", "remembered") is None)
+
+    # ── 通知批次：旧词优先 + 生词补位；旧词稀缺时生词越上限填满 ────────
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)                       # monetization（复习过）
+            _add_reviewed("serendipity", "n. 意外发现珍奇事物的运气")
+            service.sync_review_queue()
+            _add_new("apple", "苹果")
+            _add_new("banana", "香蕉")
+            _add_new("cherry", "樱桃")
+            _make_due(NOW)
+            service.update_config(
+                {
+                    "enabled": True,
+                    "max_per_day": 4,
+                    "new_word_ratio": 0.5,
+                    "quiet_hours": {"enabled": False, "start": "23:00", "end": "08:00"},
+                }
+            )
+
+            calls: list[dict] = []
+
+            def fake_notify(count, words, launch_url):
+                calls.append({"count": count, "words": list(words)})
+                return True
+
+            # max=4、ratio=0.5 → 生词上限 int(4*0.5)=2，旧词预留 2。
+            # 到期旧词 2 个（monetization + serendipity）正好占满预留 → 生词 2 个。
+            with mock.patch.object(service, "send_batch_notification", fake_notify):
+                outcome = service.run_review_tick(now=NOW)
+            check("旧词优先 + 生词补位凑满额度", outcome["words"] == 4, outcome)
+            words = set(calls[0]["words"])
+            check(
+                "批次既有旧词也有生词",
+                {"monetization", "serendipity"} <= words
+                and {"apple", "banana"} <= words,
+                words,
+            )
+            check(
+                "生词受占比上限（没把 cherry 也塞进来）",
+                "cherry" not in words,
+                words,
+            )
+
+            # 旧词稀缺：把队列清空（无到期旧词）→ 生词越过上限填满当天额度
+            store.clear_schedule()
+            store.save_stats({})
+            service.sync_review_queue()      # 重新收复习过的词
+            entries = list(store.load_schedule().values())
+            for entry in entries:
+                entry["next_due_at"] = NOW + 24 * 60 * 60 * 1000   # 明天才到期
+            store.upsert_schedule_entries(entries)
+            calls.clear()
+            with mock.patch.object(service, "send_batch_notification", fake_notify):
+                outcome = service.run_review_tick(now=NOW)
+            # 无到期旧词 → 生词越过 ratio 上限（2）把可抽的生词都用上（不浪费额度）
+            check("旧词稀缺时生词越过上限填额度", outcome["words"] == 3, outcome)
+            check("填满的全是生词", set(calls[0]["words"]) == {"apple", "banana", "cherry"}, calls[0])
+
+    # ── 会话：生词补位 + is_new 标记 ─────────────────────────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            service.sync_review_queue()
+            _add_new("apple", "苹果")
+            _add_new("banana", "香蕉")
+            _add_new("cherry", "樱桃")
+            service.update_config({"enabled": True, "max_per_day": 8})
+
+            session = service.build_session("auto", now=NOW)
+            session_words = {w["word"]: w for w in session["words"]}
+            check(
+                "auto 会话补进生词",
+                {"apple", "banana", "cherry"} <= set(session_words),
+                list(session_words),
+            )
+            check(
+                "会话里的生词带 is_new 标记",
+                all(w["is_new"] for word, w in session_words.items() if word in {"apple", "banana", "cherry"}),
+                session_words,
+            )
+            check("生词卡片能组出来", session["first_card"] is not None)
+
+    # ── 配置：new_word_ratio 读写与越界夹取 ──────────────────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            check("默认生词占比 0.80", store.load_config()["new_word_ratio"] == 0.8)
+            store.save_config({"new_word_ratio": 0.6})
+            check("可写入生词占比", store.load_config()["new_word_ratio"] == 0.6)
+            store.save_config({"new_word_ratio": 5})
+            check("越界夹到 1", store.load_config()["new_word_ratio"] == 1.0)
+            store.save_config({"new_word_ratio": -3})
+            check("越界夹到 0", store.load_config()["new_word_ratio"] == 0.0)
+
+    # ── 状态：vocab_total = 生词本总数 ───────────────────────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "review.db"
+        with mock.patch.object(store, "DB_FILE", db_path):
+            _make_vocabulary(db_path)
+            _add_reviewed("serendipity", "n. 意外发现珍奇事物的运气")
+            _add_new("apple", "苹果")
+            service.sync_review_queue()
+            status = service.get_status()
+            check("vocab_total = 生词本总数（含生词）", status["vocab_total"] == 3, status["vocab_total"])
+
+
 def test_rate_and_card() -> None:
     print("\n[14] 评分与卡片")
 
@@ -1744,6 +1963,7 @@ def main() -> int:
     test_run_tick()
     test_new_old_split_and_reveal()
     test_session()
+    test_new_word_intake()
     test_rate_and_card()
     test_refresh_example()
     test_collocation_meaning()

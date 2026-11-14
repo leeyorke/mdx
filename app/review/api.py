@@ -44,6 +44,15 @@ class ReviewConfigPayload(BaseModel):
     graduated_action: Optional[str] = Field(
         None, description="走完整个阶梯之后怎么办：stop | restart"
     )
+    new_word_ratio: Optional[float] = Field(
+        None,
+        ge=0,
+        le=1,
+        description=(
+            "每天配额里「生词」（新收录、还没复习过的词）的占比，0-1（默认 0.8）。"
+            "到期旧词优先占名额，生词补剩余；旧词稀缺时生词可越过上限填满额度。"
+        ),
+    )
     quiet_hours: Optional[dict] = Field(
         None, description="免打扰时段：{enabled, start, end}（只挡通知，不挡手动复习）"
     )

@@ -302,6 +302,37 @@ def list_reviewed_words(*, limit: int = 100, offset: int = 0) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def list_unreviewed_words(*, limit: int = 100, offset: int = 0) -> list[dict]:
+    """查询**从未复习过**的生词（``last_reviewed_at IS NULL``，即 review_count=0）。
+
+    这是复习队列的**生词来源**（intake）：这些词还没进 SRS 队列，按创建时间正序
+    返回——最久收藏的先出来（FIFO），保证收藏早的生词优先被复习到，不会收了
+    就沉底。与 :func:`list_reviewed_words`（至少复习过一次、走原 SRS 队列）互补。
+
+    判定用 ``last_reviewed_at IS NULL`` 而非 ``review_count = 0``：两者等价，但前者
+    能命中现有的 ``idx_vw_reviewed`` 索引。
+    """
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM vocabulary_words
+            WHERE last_reviewed_at IS NULL
+            ORDER BY created_at ASC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+def count_words() -> int:
+    """生词本总数（给复习页面的「计划总数」磁贴用）。"""
+    with _get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) FROM vocabulary_words").fetchone()
+    return int(row[0]) if row else 0
+
+
 def update_word(word_id: str, updates: dict) -> Optional[dict]:
     """
     更新生词（仅允许修改 star / translation / note）

@@ -20,6 +20,7 @@ from typing import Any, Iterator, Optional
 from app.review.constants import (
     DEFAULT_GRADUATED_ACTION,
     DEFAULT_MAX_PER_DAY,
+    DEFAULT_NEW_WORD_RATIO,
     DEFAULT_QUIET_HOURS_END,
     DEFAULT_QUIET_HOURS_START,
     ENTRY_TTL_DAYS,
@@ -170,6 +171,7 @@ def default_config() -> dict[str, Any]:
         "generate_example": True,
         "max_per_day": DEFAULT_MAX_PER_DAY,
         "graduated_action": DEFAULT_GRADUATED_ACTION,
+        "new_word_ratio": DEFAULT_NEW_WORD_RATIO,
         "quiet_hours": {
             "enabled": True,
             "start": DEFAULT_QUIET_HOURS_START,
@@ -234,6 +236,15 @@ def _merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, A
     return merged
 
 
+def _clamp_ratio(value: Any) -> float:
+    """把生词占比夹到 ``[0, 1]``；非法值（老库/手改）回落默认 0.80。"""
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_NEW_WORD_RATIO
+    return max(0.0, min(1.0, ratio))
+
+
 def load_config() -> dict[str, Any]:
     """读取配置；从未配置过时返回默认配置。"""
     with _get_conn() as conn:
@@ -255,12 +266,16 @@ def load_config() -> dict[str, Any]:
     merged = _merge_config(default_config(), stored)
     for key in _REMOVED_CONFIG_KEYS:
         merged.pop(key, None)
+    # 生词占比兜底 + 夹取：老库没这个键时 _merge_config 已补默认值，这里再防
+    # 存进去的是非法值（手改 / 旧版本）。
+    merged["new_word_ratio"] = _clamp_ratio(merged.get("new_word_ratio"))
     return merged
 
 
 def save_config(updates: dict[str, Any]) -> dict[str, Any]:
     """合并并保存配置，返回保存后的完整配置。"""
     config = _merge_config(load_config(), updates)
+    config["new_word_ratio"] = _clamp_ratio(config.get("new_word_ratio"))
 
     with _get_conn() as conn:
         conn.execute(

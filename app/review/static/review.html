@@ -111,6 +111,7 @@
     background: var(--soft); font-size: 12px; color: var(--muted); white-space: nowrap;
   }
   .pill.early { color: #b25000; background: rgb(210 120 20 / 12%); }
+  .pill.new-word { color: #1a7f4f; background: rgb(34 170 100 / 12%); }
   .progress { flex: 1; height: 4px; background: var(--track); border-radius: 999px; overflow: hidden; }
   .progress > i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
 
@@ -281,6 +282,7 @@
       <div class="session-top">
         <span class="progress-text" id="c-progress">第 1 / 1 个</span>
         <span class="pill early hidden" id="c-early">提前复习</span>
+        <span class="pill new-word hidden" id="c-new">新词</span>
         <div class="progress"><i id="c-progress-bar" style="width:0%"></i></div>
         <button class="btn-quit" id="quit-review">退出</button>
       </div>
@@ -380,6 +382,13 @@
           <option value="restart">从头再来</option>
         </select>
       </div>
+    </div>
+    <div class="srow">
+      <div>
+        <label class="slabel" for="new-word-ratio">生词占比</label>
+        <div class="hint">每天配额里新收录生词的比例，旧词优先、生词补位</div>
+      </div>
+      <input class="field num" type="number" id="new-word-ratio" min="0" max="100" />
     </div>
     <div class="srow">
       <div>
@@ -508,7 +517,7 @@ async function startSession(mode) {
 function emptySessionText(res) {
   switch (res.empty_reason) {
     case "noWords":
-      return "复习计划里还没有词，先用扩展的闪卡复习几个生词吧。";
+      return "生词本还是空的，先收藏几个生词吧。";
     case "allGraduated":
       return "所有词都走完阶梯了 🎉";
     default:
@@ -527,26 +536,29 @@ async function showIdle() {
 
 function renderIdle(status) {
   const rated = status.today_rated ?? 0;
+  const due = status.due_count ?? 0;
   let text;
-  if (!status.queue_size && status.graduated_count) {
+  // due_count 已含补位进来的生词：只要有可复习内容就优先报它
+  if (due > 0) {
+    text = `今天还有 ${due} 个词要复习`;
+  } else if (!status.vocab_total && !status.queue_size) {
+    text = "生词本还是空的，先收藏几个生词吧。";
+  } else if (!status.queue_size && status.graduated_count) {
     text = "所有词都走完阶梯了 🎉";
-  } else if (!status.queue_size) {
-    text = "复习计划里还没有词——先用扩展的闪卡复习几个生词吧。";
-  } else if (status.due_count > 0) {
-    text = `今天还有 ${status.due_count} 个词要复习`;
   } else if (rated > 0) {
     text = "今天的复习已完成 ✅";
   } else {
     text = "现在没有到期的词。";
   }
-  if (status.queue_size && status.next_notify_at && !(status.due_count > 0)) {
+  if (status.queue_size && status.next_notify_at && !(due > 0)) {
     text += ` 下次提醒：${formatTime(status.next_notify_at)}`;
   }
   $("idle-text").textContent = text;
 
   const cta = $("start-review");
   cta.textContent = rated > 0 ? "再来一组" : "立即复习";
-  cta.disabled = !status.queue_size;
+  // 有可复习内容（含生词）或还有阶梯词可提前复习时才可点
+  cta.disabled = !(due > 0) && !status.queue_size;
 }
 
 function renderCard(card) {
@@ -555,6 +567,8 @@ function renderCard(card) {
   $("c-progress").textContent = `第 ${index + 1} / ${queue.length} 个`;
   $("c-progress-bar").style.width = `${((index + 1) / queue.length) * 100}%`;
   $("c-early").classList.toggle("hidden", !(queue[index] && queue[index].early));
+  // 生词（首次曝光、还没进 SRS）显示「新词」角标
+  $("c-new").classList.toggle("hidden", !(queue[index] && queue[index].is_new));
 
   $("c-word").textContent = card.word || "";
 
@@ -692,7 +706,8 @@ function renderDone() {
 function renderStatus(status) {
   $("s-due").textContent = status.due_count ?? 0;
   $("s-rated").textContent = status.today_rated ?? 0;
-  $("s-queue").textContent = status.queue_size ?? 0;
+  // 计划总数 = 生词本总数（库存，含还没复习到的生词）
+  $("s-queue").textContent = status.vocab_total ?? 0;
   $("s-next").textContent = status.next_notify_at ? formatTime(status.next_notify_at) : "—";
 
   const notes = [];
@@ -710,6 +725,8 @@ function renderStatus(status) {
   $("enabled").checked = !!cfg.enabled;
   $("max-per-day").value = cfg.max_per_day ?? 8;
   $("graduated").value = cfg.graduated_action ?? "stop";
+  // 生词占比存 0-1，界面用 0-100 的百分数好填
+  $("new-word-ratio").value = Math.round((cfg.new_word_ratio ?? 0.8) * 100);
   const qh = cfg.quiet_hours || {};
   $("qh-enabled").checked = !!qh.enabled;
   $("qh-start").value = qh.start ?? "23:00";
@@ -762,6 +779,8 @@ $("save").addEventListener("click", async () => {
     generate_example: $("generate-example").checked,
     max_per_day: Number($("max-per-day").value || 8),
     graduated_action: $("graduated").value,
+    // 界面 0-100 的百分数 → 后端 0-1 的比例
+    new_word_ratio: Number($("new-word-ratio").value || 80) / 100,
     quiet_hours: {
       enabled: $("qh-enabled").checked,
       start: $("qh-start").value || "23:00",
