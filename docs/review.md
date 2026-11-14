@@ -83,8 +83,15 @@
 ## 队列从哪来
 
 只有**至少复习过一次**的生词才进队列——刚收藏、还没看过的词没有记忆曲线可排。
-扩展的闪卡评分会调 `POST /api/vocabulary/{word_id}/review`，写入
-`last_reviewed_at` 与 `review_count`，后端据此挑词。
+生词本的 `last_reviewed_at` / `review_count` 是「这个词复习过几次、最后一次啥时候」的
+唯一记账处，**两条评分链路都会写它**：
+
+- 扩展闪卡评分 → `POST /api/vocabulary/{word_id}/review`（`vocabulary.review_word`）；
+- 复习页面「记得 / 忘了」→ `POST /api/review/rate`（`service.rate_word`）：推完阶梯后
+  回写一次生词本记账，「记得」「忘了」都算复习一次、都 `review_count+1` 并刷新
+  `last_reviewed_at`（复习次数记的是「复习了几次」，不是「记住了几次」）。
+
+后端据此挑词。回写失败（词已不在生词本，如历史遗留队列条目）只记日志，不影响评分。
 
 ## 推送与配额
 

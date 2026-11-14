@@ -620,6 +620,17 @@ def rate_word(
     updated["last_rated_at"] = now
     upsert_schedule_entries([updated])
 
+    # 回写生词本记账：无论「记得」还是「忘了」都是复习了一次，
+    # review_count+1、last_reviewed_at 刷新。复习次数属于生词本，
+    # 不能只有扩展那条路（POST /api/vocabulary/{id}/review）记账，
+    # 网页评分这里也要算，否则同一个生词本两处复习口径不一致。
+    # 记账失败不影响本次评分：词可能已不在生词本（历史遗留队列条目），
+    # 阶梯照推，只记一条日志。
+    from app.vocabulary import review_word  # 局部导入，避开循环依赖
+
+    if review_word(word_id) is None:
+        log.warning("「%s」评分后回写生词本失败：词不在生词本", entry.get("word"))
+
     log.info(
         "「%s」标记为 %s，阶梯前进到 %s",
         entry.get("word"),
