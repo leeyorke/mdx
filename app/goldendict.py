@@ -114,13 +114,6 @@ WATCH_FILES: dict[str, str] = {
     "history.tmp": "history.tmp",
 }
 
-# 写入生词本 note 字段时使用的来源说明
-SOURCE_LABELS: dict[str, str] = {
-    "favorites": "favorites(收藏)",
-    "history": "history(查词记录)",
-    "history.tmp": "history.tmp(待写入查词记录)",
-}
-
 
 # ── 格式解析 ──────────────────────────────────────────────────────────
 
@@ -384,8 +377,8 @@ class HttpVocabularyWriter:
             base_url=self.api_base, timeout=HTTP_TIMEOUT, trust_env=False
         )
 
-    def add(self, word: str, translation: str, note: str) -> bool:
-        payload = {"word": word, "translation": translation, "note": note}
+    def add(self, word: str, translation: str) -> bool:
+        payload = {"word": word, "translation": translation}
         try:
             resp = self._client.post("/api/vocabulary", json=payload)
         except httpx.HTTPError as e:
@@ -409,9 +402,9 @@ class LocalVocabularyWriter:
     使用的同一个数据层函数；不依赖端口 / 网络 / ASGI 桥接。
     """
 
-    def add(self, word: str, translation: str, note: str) -> bool:
+    def add(self, word: str, translation: str) -> bool:
         try:
-            _record, created = add_word(word=word, translation=translation, note=note)
+            _record, created = add_word(word=word, translation=translation)
         except Exception as e:
             log.error("写入生词本失败 %s: %s", word, e)
             return False
@@ -522,13 +515,14 @@ class GoldenDictWatcher:
 
     # ── 写入 ──
 
-    def _build_payload(self, word: str, source: str) -> dict:
+    def _build_payload(self, word: str) -> dict:
         """构造写入生词本的 payload（translation 查词典生成）
 
         不再往 ``note`` 写「来源：GoldenDict …」——那是本该属于用户备注的
         字段，之前把它当自由文本塞溯源信息，会在前端详情栏的笔记框里显示
-        成一条可编辑的「备注」。GoldenDict 导入的都是本地词（``source`` 落
-        默认值 ``local``），出处靠 ``source`` 即可，无需额外备注。
+        成一条可编辑的「备注」。GoldenDict 导入的都是本地词，出处由
+        ``vocabulary_words.source`` 表达（默认 ``local``），无需额外备注，
+        所以这里只返回 ``word`` 和 ``translation``。
         """
         return {
             "word": word,
@@ -571,8 +565,8 @@ class GoldenDictWatcher:
 
         if to_add:
             for word, source in to_add:
-                payload = self._build_payload(word, source)
-                if self.writer.add(word, payload["translation"], payload["note"]):
+                payload = self._build_payload(word)
+                if self.writer.add(word, payload["translation"]):
                     # 只有写入成功才标记为已处理，失败的下一轮重试
                     processed.add(word)
                     report.added.append(word)

@@ -308,11 +308,13 @@ def test_end_to_end() -> None:
                       f"got {report.skipped_non_word}")
                 conn = sqlite3.connect(str(vocab_db))
                 note = conn.execute("SELECT note FROM vocabulary_words WHERE word='simplify'").fetchone()[0]
+                source = conn.execute("SELECT source FROM vocabulary_words WHERE word='simplify'").fetchone()[0]
                 translation = conn.execute(
                     "SELECT translation FROM vocabulary_words WHERE word='credential'"
                 ).fetchone()[0]
                 conn.close()
-                check("note 含来源说明", "history.tmp" in note, note)
+                check("note 不写来源（留给用户备注，保持 NULL）", note is None, note)
+                check("出处记在 source=local", source == "local", source)
                 check("translation 为词典格式", translation.startswith("credential\n英 /"), translation[:60])
 
                 # ── 第二次运行：什么都不加 ──
@@ -471,7 +473,7 @@ def test_writers() -> None:
         vocabulary.DB_FILE = db
         try:
             writer = LocalVocabularyWriter()
-            check("进程内写入成功", writer.add("localtestword", "本地测试", "note"))
+            check("进程内写入成功", writer.add("localtestword", "本地测试"))
             check("进程内写入落库", db_words(db) == ["localtestword"], f"got {db_words(db)}")
             writer.close()
         finally:
@@ -480,7 +482,7 @@ def test_writers() -> None:
 
     # HTTP writer 指向没有服务的端口 -> 返回 False 而不抛异常
     http_writer = HttpVocabularyWriter("http://127.0.0.1:59999")
-    check("HTTP 写入失败返回 False", not http_writer.add("x", "y", "z"))
+    check("HTTP 写入失败返回 False", not http_writer.add("x", "y"))
     http_writer.close()
 
 
