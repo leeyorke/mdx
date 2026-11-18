@@ -148,6 +148,14 @@ LLM 输出契约（system 要求「只输出一个 JSON 对象」）：
 页的苹果式极简（浅灰底、白色大圆角卡片、深色跟随系统）。响应同样带
 `Cache-Control: no-cache`。
 
+评卷结果里的 LLM 文案（逐条批改的 `explanation`、词汇建议的 `note`、`polished`
+润色版、笔记列表的 AI 语法批注）走页面内置的轻量 Markdown 渲染器 `renderMarkdown()`
+渲染——LLM 偶尔会在这些字段里带回 `##`、`**`、```` ``` ```` 围栏、列表这类标记，
+直接转义会原样露出来。渲染器先整体转义 HTML（防注入），再解析标题/围栏代码/引用/
+列表/段落与行内标记。`score` / `feedback` / 你的短文（span 高亮）仍按原样展示，
+不参与 Markdown 解析——分数是数字、feedback 是一句话、短文高亮由 span 定位驱动。
+不引外部库、不走 CDN，页面仍是单文件、离线可用。
+
 ## 边界与失败模式
 
 - **词形覆盖**：依赖 LLM 判 `used`（能认 believes/believed）；兜底 matcher 只做整词

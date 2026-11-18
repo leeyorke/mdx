@@ -133,6 +133,40 @@
   .def-block .label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
   .example { background: var(--soft); border-radius: 12px; padding: 12px 14px; }
   .example .zh { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+  /* ── Markdown 渲染（LLM 例句 / 释义里允许出现的轻量排版） ───────── */
+  .md { line-height: 1.65; }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md p { margin: 0.5em 0; }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+    margin: 0.9em 0 0.4em; font-weight: 700; line-height: 1.3;
+  }
+  .md h1 { font-size: 1.25em; }
+  .md h2 { font-size: 1.15em; }
+  .md h3 { font-size: 1.05em; }
+  .md h4, .md h5, .md h6 { font-size: 1em; }
+  .md ul, .md ol { margin: 0.5em 0; padding-left: 1.4em; }
+  .md li { margin: 0.25em 0; }
+  .md li > ul, .md li > ol { margin: 0.2em 0; }
+  .md code {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 0.88em; background: var(--track); border-radius: 5px;
+    padding: 0.1em 0.4em;
+  }
+  .md pre {
+    background: var(--track); border-radius: 10px; padding: 12px 14px;
+    overflow-x: auto; margin: 0.6em 0;
+  }
+  .md pre code { background: none; padding: 0; font-size: 0.85em; line-height: 1.55; }
+  .md blockquote {
+    margin: 0.6em 0; padding: 0.1em 0 0.1em 0.9em;
+    border-left: 3px solid var(--line); color: var(--muted);
+  }
+  .md blockquote p { margin: 0.35em 0; }
+  .md hr { border: none; border-top: 1px solid var(--line); margin: 1em 0; }
+  .md a { color: inherit; }
+  .md strong { font-weight: 700; }
   .collocation-item { display: inline-block; margin: 8px 14px 0 0; }
   .collocation-zh { font-size: 12px; color: var(--muted); margin-left: 6px; }
 
@@ -308,7 +342,7 @@
       <div class="def-block" id="c-def-block">
         <div class="label">词典释义</div>
         <div class="example hidden" id="c-example-wrap">
-          <div id="c-example"></div>
+          <div id="c-example" class="md"></div>
           <div class="zh" id="c-example-zh"></div>
           <div id="c-collocation"></div>
         </div>
@@ -467,6 +501,136 @@ function escapeHtml(text) {
   }[c]));
 }
 
+// ── 轻量 Markdown 渲染 ──────────────────────────────────────────────
+// LLM 返回的例句/解析常带 `##`、`**`、``` 围栏、列表这类标记，直接 textContent
+// 会原样露出来。这里做一个够用的小渲染器：先整体转义 HTML（防注入），再按行解析
+// 块级结构（标题/围栏代码/引用/列表/段落），最后在非代码文本里替换行内标记
+// （粗体/斜体/行内代码/链接）。覆盖复习场景会出现的常见写法，不追求完整 CommonMark。
+function renderMarkdown(src) {
+  const text = String(src ?? "");
+  if (!text.trim()) return "";
+  const lines = escapeHtml(text).split(/\r\n|\r|\n/);
+  const out = [];
+  let i = 0;
+  // 行内标记：代码优先（里面不再解析其它标记），然后粗体/斜体/链接
+  const inline = s => s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // 围栏代码块 ``` ... ```
+    const fence = line.match(/^\s*```(.*)$/);
+    if (fence) {
+      i += 1;
+      const buf = [];
+      while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
+      i += 1; // 跳过收尾的 ```（没有就到结尾）
+      out.push(`<pre><code>${buf.join("\n")}</code></pre>`);
+      continue;
+    }
+
+    // 标题 # ~ ######
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (heading) {
+      const level = heading[1].length;
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      i += 1;
+      continue;
+    }
+
+    // 分割线
+    if (/^\s{0,3}([-*_])\s*(?:\1\s*){2,}$/.test(line)) {
+      out.push("<hr>");
+      i += 1;
+      continue;
+    }
+
+    // 引用 >
+    if (/^\s{0,3}>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s{0,3}>\s?/.test(lines[i])) {
+        buf.push(lines[i++].replace(/^\s{0,3}>\s?/, ""));
+      }
+      out.push(`<blockquote>${renderMarkdown(buf.join("\n"))}</blockquote>`);
+      continue;
+    }
+
+    // 无序 / 有序列表（支持两层缩进嵌套）
+    const bullet = line.match(/^(\s*)[-*+]\s+(.*)$/);
+    const numbered = line.match(/^(\s*)\d+[.)]\s+(.*)$/);
+    if (bullet || numbered) {
+      const ordered = !!numbered;
+      const baseIndent = ((bullet || numbered)[1]).length;
+      const items = [];
+      let pending = null;   // 当前列表项下面挂的子列表 HTML
+      while (i < lines.length) {
+        const m = lines[i].match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+        if (m) {
+          const indent = m[1].length;
+          if (indent <= baseIndent + 1) {
+            if (pending) { items[items.length - 1] += pending; pending = null; }
+            items.push(inline(m[3]));
+            i += 1;
+          } else {
+            // 更深的缩进：收集成一个子列表，整块交给递归。只收与子列表同级或
+            // 更深的行——一旦遇到缩进回到本级的兄弟项就停，别把顶层项吞进来。
+            const sub = [];
+            const subBase = m[1].length;
+            while (i < lines.length) {
+              const s = lines[i].match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+              if (s) {
+                if (s[1].length >= subBase) { sub.push(lines[i]); i += 1; }
+                else break;   // 缩进小于子列表：是外层的兄弟项，交回外层
+              } else if (lines[i].trim() === "") {
+                break;
+              } else if (sub.length && /^\s{2,}\S/.test(lines[i])) {
+                sub.push(lines[i]); i += 1;   // 子列表项的续行
+              } else {
+                break;
+              }
+            }
+            pending = renderMarkdown(sub.join("\n"));
+          }
+        } else if (line.trim() === "" || /^\s{0,3}$/.test(lines[i])) {
+          i += 1;   // 列表项之间的空行
+        } else if (pending) {
+          break;
+        } else if (items.length && /^\s{2,}\S/.test(lines[i])) {
+          items[items.length - 1] += " " + inline(lines[i].trim());  // 续行折进来
+          i += 1;
+        } else {
+          break;
+        }
+      }
+      if (pending) items[items.length - 1] += pending;
+      const tag = ordered ? "ol" : "ul";
+      out.push(`<${tag}>${items.map(t => `<li>${t}</li>`).join("")}</${tag}>`);
+      continue;
+    }
+
+    // 空行
+    if (line.trim() === "") {
+      i += 1;
+      continue;
+    }
+
+    // 段落：连续非空、非结构化的行合成一段
+    const buf = [line];
+    i += 1;
+    while (i < lines.length && lines[i].trim() !== ""
+      && !/^\s{0,3}(#{1,6}\s|>|```|[-*+]\s|\d+[.)]\s)/.test(lines[i])) {
+      buf.push(lines[i]);
+      i += 1;
+    }
+    out.push(`<p>${inline(buf.join(" ").trim())}</p>`);
+  }
+  return out.join("");
+}
+
 // 固定搭配：新版是 {text, chinese}（搭配 + 中文意思），老缓存是纯字符串
 function collocationHtml(list) {
   return (list || [])
@@ -603,7 +767,7 @@ function renderCard(card) {
   const hasCached = !!(ex.example || "").trim();
   $("c-def-block").classList.toggle("hidden", !hasCached);
   $("c-example-wrap").classList.toggle("hidden", !hasCached);
-  $("c-example").textContent = ex.example || "";
+  $("c-example").innerHTML = renderMarkdown(ex.example || "");
   $("c-example-zh").textContent = ex.sentence_chinese || "";
   $("c-collocation").innerHTML = collocationHtml(ex.collocations);
   ensurePrefetch();
@@ -651,7 +815,7 @@ function applyExample(ex) {
   const has = !!(ex.example || "").trim();
   $("c-def-block").classList.toggle("hidden", !has);
   $("c-example-wrap").classList.toggle("hidden", !has);
-  $("c-example").textContent = ex.example || "";
+  $("c-example").innerHTML = renderMarkdown(ex.example || "");
   $("c-example-zh").textContent = ex.sentence_chinese || "";
   $("c-collocation").innerHTML = collocationHtml(ex.collocations);
 }
